@@ -29,7 +29,7 @@ pub struct DescriptorTable {
     pub simd_floating_point_exception: Entry<Handler>,
     pub virtualization_exception: Entry<Handler>,
     pub control_protection_exception: Entry<ErrorCodeHandler>,
-    _reserved2: [Entry<Handler>; 8],
+    _reserved2: [Entry<Handler>; 6],
     pub hypervisor_injection_exception: Entry<Handler>,
     pub vmm_communication_exception: Entry<ErrorCodeHandler>,
     pub security_exception: Entry<ErrorCodeHandler>,

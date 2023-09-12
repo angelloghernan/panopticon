@@ -16,7 +16,7 @@ lazy_static! {
         let mut idt: idt::DescriptorTable = Default::default();
         idt.breakpoint.set_handler_fn(breakpoint_handler);
         idt.double_fault.set_handler_fn(double_fault_handler);
-        idt.user_interrupts[1].set_handler_fn(timer_handler);
+        idt.user_interrupts[0].set_handler_fn(timer_handler);
         idt
     };
 }
@@ -48,8 +48,7 @@ fn panic(info: &PanicInfo) -> ! {
 
 extern "x86-interrupt" fn timer_handler(_stack_frame: StackFrame) {
     println!("timer");
-    loop {}
-    // unsafe { PIC.lock().end_of_interrupt(0x20) }
+    unsafe { PIC.lock().end_of_interrupt(0x20) }
 }
 
 extern "x86-interrupt" fn double_fault_handler(stack_frame: StackFrame, error_code: u64) -> ! {
