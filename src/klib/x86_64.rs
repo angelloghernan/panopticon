@@ -20,6 +20,68 @@ pub unsafe fn lidt(idt: &DescriptorTablePointer) {
 }
 
 #[inline]
+pub fn enable_interrupts() {
+    unsafe {
+        asm!("sti", options(nostack, nomem))
+    }
+}
+
+#[inline]
+pub fn disable_interrupts() {
+    unsafe {
+        asm!("cli", options(nostack, nomem))
+    }
+}
+
+#[inline]
+pub unsafe fn port_read_u8(port: u16) -> u8 {
+    let ret: u8;
+    unsafe {
+        asm!("in al, dx", out("al") ret, in("dx") port, options(nomem, nostack, preserves_flags))
+    }
+    ret
+}
+
+#[inline]
+pub unsafe fn port_read_u16(port: u16) -> u16 {
+    let ret: u16;
+    unsafe {
+        asm!("in ax, dx", out("ax") ret, in("dx") port, options(nomem, nostack, preserves_flags))
+    }
+    ret
+}
+
+#[inline]
+pub unsafe fn port_read_u32(port: u16) -> u32 {
+    let ret: u32;
+    unsafe {
+        asm!("in eax, dx", out("eax") ret, in("dx") port, options(nomem, nostack, preserves_flags))
+    }
+    ret
+}
+
+#[inline]
+pub unsafe fn port_write_u8(port: u16, data: u8) {
+    asm!("out dx, al", in("dx") port, in("al") data, options(nomem, nostack, preserves_flags))
+}
+
+#[inline]
+pub unsafe fn port_write_u16(port: u16, data: u16) {
+    asm!("out dx, al", in("dx") port, in("ax") data, options(nomem, nostack, preserves_flags))
+}
+
+#[inline]
+pub unsafe fn port_write_u32(port: u16, data: u32) {
+    asm!("out dx, al", in("dx") port, in("eax") data, options(nomem, nostack, preserves_flags))
+}
+
+#[inline]
+pub unsafe fn io_wait() {
+    port_write_u8(0x80, 0x00);
+}
+
+
+#[inline]
 pub fn int3() {
     unsafe {
         asm!("int3", options(nostack, nomem))

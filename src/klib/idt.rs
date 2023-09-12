@@ -1,5 +1,4 @@
 use crate::klib::x86_64;
-use crate::println;
 use x86_64::CanonicalAddress;
 
 use core::marker::PhantomData;
@@ -30,12 +29,12 @@ pub struct DescriptorTable {
     pub simd_floating_point_exception: Entry<Handler>,
     pub virtualization_exception: Entry<Handler>,
     pub control_protection_exception: Entry<ErrorCodeHandler>,
-    _reserved2: Entry<Handler>,
+    _reserved2: [Entry<Handler>; 8],
     pub hypervisor_injection_exception: Entry<Handler>,
     pub vmm_communication_exception: Entry<ErrorCodeHandler>,
     pub security_exception: Entry<ErrorCodeHandler>,
     _reserved3: Entry<Handler>,
-    pub user_interrupts: [Entry<Handler>; 0xFF - 0x1F],
+    pub user_interrupts: [Entry<Handler>; 256 - 32],
 }
 
 impl DescriptorTable {
@@ -86,7 +85,7 @@ impl Default for DescriptorTable {
             vmm_communication_exception: Default::default(),
             security_exception: Default::default(),
             _reserved3: Default::default(),
-            user_interrupts: [Default::default(); 0xFF - 0x1F],
+            user_interrupts: [Default::default(); 256 - 32],
         }
     }
 }

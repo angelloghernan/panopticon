@@ -1,7 +1,8 @@
-use lazy_static::lazy_static;
-use volatile::Volatile;
 use core::fmt;
 use spin::Mutex;
+use crate::x86_64;
+use volatile::Volatile;
+use lazy_static::lazy_static;
 
 lazy_static! {
     pub static ref CONSOLE_WRITER: Mutex<ConsoleWriter> = Mutex::new(ConsoleWriter {
@@ -168,5 +169,7 @@ macro_rules! println {
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
     use core::fmt::Write;
+    x86_64::disable_interrupts();
     CONSOLE_WRITER.lock().write_fmt(args).unwrap();
+    x86_64::enable_interrupts();
 }
