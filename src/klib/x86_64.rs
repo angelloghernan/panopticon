@@ -34,6 +34,45 @@ pub fn disable_interrupts() {
 }
 
 #[inline]
+pub fn read_rflags() -> u64 {
+    let r: u64;
+
+    unsafe {
+        asm!("pushfq; pop {}", out(reg) r, options(nomem, preserves_flags));
+    }
+
+    r
+}
+
+#[inline]
+pub fn interrupts_enabled() -> bool {
+    let rflags = read_rflags();
+
+    rflags & (1 << 9) > 0
+}
+
+#[inline]
+pub fn without_interrupts<F, R>(f: F) -> R 
+where
+    F: FnOnce() -> R
+{
+
+    let enabled = interrupts_enabled();
+
+    if enabled {
+        disable_interrupts();
+    }
+
+    let result = f();
+
+    if enabled {
+        enable_interrupts();
+    }
+
+    result
+}
+
+#[inline]
 pub unsafe fn port_read_u8(port: u16) -> u8 {
     let ret: u8;
     unsafe {

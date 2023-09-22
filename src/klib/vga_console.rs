@@ -169,7 +169,5 @@ macro_rules! println {
 #[doc(hidden)]
 pub fn _print(args: fmt::Arguments) {
     use core::fmt::Write;
-    x86_64::disable_interrupts();
-    CONSOLE_WRITER.lock().write_fmt(args).unwrap();
-    x86_64::enable_interrupts();
+    x86_64::without_interrupts(|| CONSOLE_WRITER.lock().write_fmt(args).unwrap())
 }
