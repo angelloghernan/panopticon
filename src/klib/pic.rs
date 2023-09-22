@@ -16,9 +16,17 @@ const ICW4_8086: u8 = 0x1;
 
 const END_OF_INTERRUPT: u8 = 0x20;
 
+const PIC_IRQ_OFFSET: u8 = 0x20;
+
+#[repr(u8)]
+pub enum Irq {
+    Timer = 0x0,
+    Keyboard = 0x1,
+}
+
 lazy_static! {
     pub static ref PIC: Mutex<PicPair> = { 
-        Mutex::new(PicPair::new(0x20, 0x28))
+        Mutex::new(PicPair::new(PIC_IRQ_OFFSET, PIC_IRQ_OFFSET + 8))
     };
 }
 
