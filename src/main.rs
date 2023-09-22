@@ -2,21 +2,25 @@
 #![no_main]
 #![feature(const_mut_refs)]
 #![feature(abi_x86_interrupt)]
+#![feature(maybe_uninit_uninit_array)]
 
 mod klib;
 use klib::idt;
 use klib::pic;
 use pic::PIC;
+use klib::x86_64;
+use klib::pic::Irq;
 use idt::StackFrame;
 use lazy_static::lazy_static;
-use klib::x86_64;
+use klib::ps2::keyboard::KEYBOARD;
 
 lazy_static! {
     static ref IDT: idt::DescriptorTable = {
         let mut idt: idt::DescriptorTable = Default::default();
         idt.breakpoint.set_handler_fn(breakpoint_handler);
         idt.double_fault.set_handler_fn(double_fault_handler);
-        idt.user_interrupts[0].set_handler_fn(timer_handler);
+        idt.user_interrupts[Irq::Timer as usize].set_handler_fn(timer_handler);
+        idt.user_interrupts[Irq::Keyboard as usize].set_handler_fn(keyboard_handler);
         idt
     };
 }
@@ -35,6 +39,10 @@ fn init() {
         pic_guard.initialize();
         pic_guard.enable_all();
     };
+    {
+        let mut keyboard = KEYBOARD.lock();
+        keyboard.enable();
+    }
     x86_64::enable_interrupts();
 }
 
@@ -46,9 +54,20 @@ fn panic(info: &PanicInfo) -> ! {
     loop {}
 }
 
+extern "x86-interrupt" fn keyboard_handler(_stack_frame: StackFrame) {
+    let key = { KEYBOARD.lock().read_byte() };
+
+    match key {
+        Ok(byte) => println!("Byte received from keyboard: {}", byte),
+        Err(_) => println!("Couldn't get key"),
+    }
+
+    unsafe { PIC.lock().end_of_interrupt(Irq::Keyboard as u8) }
+}
+
 extern "x86-interrupt" fn timer_handler(_stack_frame: StackFrame) {
     println!("timer");
-    unsafe { PIC.lock().end_of_interrupt(0x20) }
+    unsafe { PIC.lock().end_of_interrupt(Irq::Timer as u8) }
 }
 
 extern "x86-interrupt" fn double_fault_handler(stack_frame: StackFrame, error_code: u64) -> ! {
