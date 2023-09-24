@@ -11,8 +11,11 @@ use pic::PIC;
 use klib::x86_64;
 use klib::pic::Irq;
 use idt::StackFrame;
+use crate::klib::ps2;
+use ps2::keyboard::KeyCode;
+use ps2::keyboard::KEYBOARD;
+use ps2::keyboard::SpecialKey;
 use lazy_static::lazy_static;
-use klib::ps2::keyboard::KEYBOARD;
 
 lazy_static! {
     static ref IDT: idt::DescriptorTable = {
@@ -29,12 +32,44 @@ lazy_static! {
 pub extern "C" fn _start() -> ! {
     init();
     println!("Hello, World!");
-    loop {}
+    loop {
+        x86_64::without_interrupts(|| 
+            if let Some(key) = KEYBOARD.lock().pop_key() {
+                print_key(key)
+            });
+        x86_64::hlt();
+    }
+}
+
+fn print_key(key: KeyCode) {
+    use KeyCode::*;
+    static mut LSHIFT_PRESSED: bool = false;
+    static mut RSHIFT_PRESSED: bool = false;
+
+    match key {
+        AsciiDown(key) => {
+            let shift_pressed = unsafe { LSHIFT_PRESSED || RSHIFT_PRESSED };
+            let ch = if shift_pressed {
+                key.to_ascii_uppercase()
+            } else {
+                key
+            };
+
+            print!("{}", ch as char);
+        },
+        SpecialDown(SpecialKey::Enter) => print!("\n"),
+        SpecialDown(SpecialKey::Backspace) => print!("\x08"),
+        SpecialDown(SpecialKey::LeftShift) => unsafe { LSHIFT_PRESSED = true },
+        SpecialDown(SpecialKey::RightShift) => unsafe { RSHIFT_PRESSED = true },
+        SpecialUp(SpecialKey::LeftShift) => unsafe { LSHIFT_PRESSED = false },
+        SpecialUp(SpecialKey::RightShift) => unsafe { RSHIFT_PRESSED = false },
+        _ => {},
+    }
 }
 
 fn init() {
     IDT.load();
-    unsafe { 
+    unsafe {
         let mut pic_guard = PIC.lock();
         pic_guard.initialize();
         pic_guard.enable_all();
@@ -55,18 +90,25 @@ fn panic(info: &PanicInfo) -> ! {
 }
 
 extern "x86-interrupt" fn keyboard_handler(_stack_frame: StackFrame) {
-    let key = { KEYBOARD.lock().read_byte() };
+    {
+        let mut keyboard = KEYBOARD.lock();
+        let key = { keyboard.read_byte() };
 
-    match key {
-        Ok(byte) => println!("Byte received from keyboard: {}", byte),
-        Err(_) => println!("Couldn't get key"),
+
+
+        match key {
+            Ok(byte) => { let _ = keyboard.push_key(byte); },
+            Err(_) => println!("Couldn't get key"),
+        }
+
+
+        let _ = keyboard.send_next_command();
     }
 
     unsafe { PIC.lock().end_of_interrupt(Irq::Keyboard as u8) }
 }
 
 extern "x86-interrupt" fn timer_handler(_stack_frame: StackFrame) {
-    println!("timer");
     unsafe { PIC.lock().end_of_interrupt(Irq::Timer as u8) }
 }
 

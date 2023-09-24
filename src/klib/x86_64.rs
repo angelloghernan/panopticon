@@ -1,6 +1,13 @@
 use core::arch::asm;
 use core::fmt;
 
+#[inline]
+pub fn hlt() {
+    unsafe {
+        asm!("hlt", options(nomem, nostack, preserves_flags))
+    }
+}
+
 /// Read the "cs" register.
 #[inline]
 pub fn read_cs() -> u16 {
