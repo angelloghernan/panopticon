@@ -31,7 +31,6 @@ lazy_static! {
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
     init();
-    println!("Hello, World!");
     loop {
         x86_64::without_interrupts(|| 
             if let Some(key) = KEYBOARD.lock().pop_key() {
@@ -45,10 +44,11 @@ fn print_key(key: KeyCode) {
     use KeyCode::*;
     static mut LSHIFT_PRESSED: bool = false;
     static mut RSHIFT_PRESSED: bool = false;
+    static mut CAPS_PRESSED: bool = false;
 
     match key {
         AsciiDown(key) => {
-            let shift_pressed = unsafe { LSHIFT_PRESSED || RSHIFT_PRESSED };
+            let shift_pressed = unsafe { LSHIFT_PRESSED || RSHIFT_PRESSED || CAPS_PRESSED };
             let ch = if shift_pressed {
                 key.to_ascii_uppercase()
             } else {
@@ -61,6 +61,7 @@ fn print_key(key: KeyCode) {
         SpecialDown(SpecialKey::Backspace) => print!("\x08"),
         SpecialDown(SpecialKey::LeftShift) => unsafe { LSHIFT_PRESSED = true },
         SpecialDown(SpecialKey::RightShift) => unsafe { RSHIFT_PRESSED = true },
+        SpecialDown(SpecialKey::CapsLock) => unsafe { CAPS_PRESSED = !CAPS_PRESSED },
         SpecialUp(SpecialKey::LeftShift) => unsafe { LSHIFT_PRESSED = false },
         SpecialUp(SpecialKey::RightShift) => unsafe { RSHIFT_PRESSED = false },
         _ => {},
