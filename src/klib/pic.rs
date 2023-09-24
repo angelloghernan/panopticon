@@ -1,6 +1,5 @@
 use lazy_static::lazy_static;
 use crate::klib::x86_64;
-use crate::println;
 use spin::Mutex;
 
 const BASE_COMMAND_PORT: u16 = 0x20;
