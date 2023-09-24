@@ -42,6 +42,10 @@ impl<const N: usize, T> CircularBuffer<N, T> {
         self.size -= 1
     }
 
+    fn inc_size(&mut self) {
+        self.size += 1
+    }
+
     /// Return whether the circular buffer is empty.
     pub fn empty(&self) -> bool {
         self.size == 0
@@ -60,8 +64,8 @@ impl<const N: usize, T> CircularBuffer<N, T> {
             self.front_maybe_uninit_mut().write(item);
             self.inc_start()
         } else {
+            self.inc_size();
             self.back_maybe_uninit_mut().write(item);
-            self.inc_start()
         }
     }
 
