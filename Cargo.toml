@@ -12,9 +12,13 @@ panic = "abort"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-bootloader = "0.9.23"
+bootloader_api = "0.11"
+noto-sans-mono-bitmap = "0.2.0"
 volatile = "0.2.6"
-spin = "0.9.8"
+
+[dependencies.spin]
+version = "0.9.8"
+features = ["once"]
 
 [dependencies.lazy_static]
 version = "1.0"

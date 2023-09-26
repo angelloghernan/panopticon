@@ -16,6 +16,8 @@ use ps2::keyboard::KeyCode;
 use ps2::keyboard::KEYBOARD;
 use ps2::keyboard::SpecialKey;
 use lazy_static::lazy_static;
+use bootloader_api::{entry_point, BootInfo};
+use klib::graphics::framebuffer;
 
 lazy_static! {
     static ref IDT: idt::DescriptorTable = {
@@ -28,9 +30,8 @@ lazy_static! {
     };
 }
 
-#[no_mangle]
-pub extern "C" fn _start() -> ! {
-    init();
+fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
+    init(boot_info);
     loop {
         x86_64::without_interrupts(|| 
             if let Some(key) = KEYBOARD.lock().pop_key() {
@@ -39,6 +40,8 @@ pub extern "C" fn _start() -> ! {
         x86_64::hlt();
     }
 }
+
+entry_point!(kernel_main);
 
 fn print_key(key: KeyCode) {
     use KeyCode::*;
@@ -68,7 +71,8 @@ fn print_key(key: KeyCode) {
     }
 }
 
-fn init() {
+fn init(boot_info: &'static mut BootInfo) {
+    unsafe { framebuffer::init_framebuffer(boot_info.framebuffer.as_mut().unwrap()) };
     IDT.load();
     unsafe {
         let mut pic_guard = PIC.lock();
