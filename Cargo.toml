@@ -3,23 +3,13 @@ name = "panopticon"
 version = "0.1.0"
 edition = "2021"
 
-[profile.dev]
-panic = "abort"
-
-[profile.release]
-panic = "abort"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[build-dependencies]
+bootloader = "0.11"
+kernel = { path = "kernel", artifact = "bin", target = "x86_64-unknown-none" }
 
 [dependencies]
-bootloader_api = "0.11"
-noto-sans-mono-bitmap = "0.2.0"
-volatile = "0.2.6"
+# used for UEFI booting in QEMU
+ovmf-prebuilt = "0.1.0-alpha.1"
 
-[dependencies.spin]
-version = "0.9.8"
-features = ["once"]
-
-[dependencies.lazy_static]
-version = "1.0"
-features = ["spin_no_std"]
+[workspace]
+members = ["kernel"]
