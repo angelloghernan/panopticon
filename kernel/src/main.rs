@@ -53,9 +53,9 @@ fn print_key(key: KeyCode) {
         AsciiDown(key) => {
             let shift_pressed = unsafe { LSHIFT_PRESSED || RSHIFT_PRESSED || CAPS_PRESSED };
             let ch = if shift_pressed {
-                key.to_ascii_uppercase()
+                key.get_shifted()
             } else {
-                key
+                key.get()
             };
 
             print!("{}", ch as char);
@@ -98,8 +98,6 @@ extern "x86-interrupt" fn keyboard_handler(_stack_frame: StackFrame) {
     {
         let mut keyboard = KEYBOARD.lock();
         let key = { keyboard.read_byte() };
-
-
 
         match key {
             Ok(byte) => { let _ = keyboard.push_key(byte); },

@@ -14,11 +14,13 @@ const LETTER_SPACING: usize = 0;
 
 const BORDER_PADDING: usize = 1;
 
-const CHAR_RASTER_HEIGHT: RasterHeight = RasterHeight::Size16;
+const CHAR_RASTER_HEIGHT: RasterHeight = RasterHeight::Size20;
 
 const CHAR_RASTER_WIDTH: usize = get_raster_width(FontWeight::Regular, CHAR_RASTER_HEIGHT);
 
 const FONT_WEIGHT: FontWeight = FontWeight::Regular;
+
+pub const BACKSPACE: char = 0x08 as char;
 
 fn get_rasterized_char(ch: char) -> RasterizedChar {
     get_raster(ch, FONT_WEIGHT, CHAR_RASTER_HEIGHT).unwrap()
@@ -44,8 +46,8 @@ impl FrameBufferWriter {
         let mut writer = Self {
             framebuffer,
             info,
-            x: 0,
-            y: 0,
+            x: BORDER_PADDING,
+            y: BORDER_PADDING,
         };
 
         writer.clear();
@@ -63,6 +65,23 @@ impl FrameBufferWriter {
         self.x = BORDER_PADDING;
     }
 
+    fn backspace(&mut self) {
+        if self.x == BORDER_PADDING {
+            if self.y != BORDER_PADDING {
+                self.y -= CHAR_RASTER_HEIGHT.val() + LINE_SPACING;
+                self.x = self.width() - BORDER_PADDING - CHAR_RASTER_WIDTH;
+            }
+        } else {
+            self.x -= CHAR_RASTER_WIDTH;
+        }
+
+        for (y, row) in get_rasterized_char(' ').raster().iter().enumerate() {
+            for (x, byte) in row.iter().enumerate() {
+                self.write_pixel(self.x + x, self.y + y, *byte);
+            }
+        }
+    }
+
     pub fn width(&self) -> usize {
         self.info.width
     }
@@ -74,6 +93,7 @@ impl FrameBufferWriter {
     fn write_char(&mut self, ch: char) {
         match ch {
             '\n' => self.newline(),
+            BACKSPACE => self.backspace(),
             ch => {
                 let new_x = self.x + CHAR_RASTER_WIDTH;
                 if new_x >= self.width() {

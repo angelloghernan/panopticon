@@ -25,6 +25,25 @@ const KEY_TABLE: [u8; 256] = [
     b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0',
 ];
 
+const SHIFTED_KEY_TABLE: [u8; 256] = [
+    b'\0', b'\0', b'!', b'@', b'#', b'$', b'%', b'^', b'&', b'*', b'(', b')', b'_', b'+', b'\0', b'\0',
+    b'Q', b'W', b'E', b'R', b'T', b'Y', b'U', b'I', b'O', b'P', b'{', b'}', b'\0', b'\0', b'A', b'S',
+    b'D', b'F', b'G', b'H', b'J', b'K', b'L', b':', b'"', b'~', b'\0', b'|', b'Z', b'X', b'C', b'V',
+    b'B', b'N', b'M', b'<', b'>', b'?', b'\0', b'\0', b'\0', b' ', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0',
+    b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0',
+    b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0',
+    b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0',
+    b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0',
+    b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0',
+    b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0',
+    b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0',
+    b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0',
+    b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0',
+    b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0',
+    b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0',
+    b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0', b'\0',
+];
+
 lazy_static! {
     pub static ref KEYBOARD: Mutex<Keyboard> = Mutex::new(Keyboard::new());
 }
@@ -161,8 +180,8 @@ pub enum ScanCodeSet {
 }
 
 pub enum KeyCode {
-    AsciiUp(u8),
-    AsciiDown(u8),
+    AsciiUp(AsciiKey),
+    AsciiDown(AsciiKey),
     SpecialUp(SpecialKey),
     SpecialDown(SpecialKey),
     ExtendedDown(ExtendedKeyCode),
@@ -180,9 +199,9 @@ impl KeyCode {
             }
         } else if KEY_TABLE[byte as usize] != b'\0' {
             if byte > RELEASE_GAP {
-                Some(AsciiUp(KEY_TABLE[byte as usize]))
+                Some(AsciiUp(AsciiKey { idx: byte } ))
             } else {
-                Some(AsciiDown(KEY_TABLE[byte as usize]))
+                Some(AsciiDown(AsciiKey { idx: byte } ))
             }
         } else {
             None
@@ -203,6 +222,21 @@ impl KeyCode {
                 None
             }
         }
+    }
+}
+
+#[repr(transparent)]
+pub struct AsciiKey {
+    idx: u8,
+}
+
+impl AsciiKey {
+    pub fn get(&self) -> u8 {
+        KEY_TABLE[self.idx as usize]
+    }
+
+    pub fn get_shifted(&self) -> u8 {
+        SHIFTED_KEY_TABLE[self.idx as usize]
     }
 }
 
@@ -343,16 +377,6 @@ pub enum ExtendedKeyCode {
 #[repr(u8)]
 pub enum SpecialKey {
     Esc             = 0x01,
-    One             = 0x02,
-    Two             = 0x03,
-    Three           = 0x04,
-    Four            = 0x05,
-    Five            = 0x06,
-    Six             = 0x07,
-    Seven           = 0x08,
-    Eight           = 0x09,
-    Nine            = 0x0A,
-    Zero            = 0x0B,
     Backspace       = 0x0E,
     Tab             = 0x0F,
 
@@ -450,10 +474,10 @@ impl TryFrom<u8> for SpecialKey {
 
     fn try_from(key: u8) -> Result<Self, Self::Error> {
         match key {
-            0x01..=0x0B | 0x0E..=0x0F | 0x1C..=0x1D | 0x2A | 0x36 | 0x38 | 0x3A..=0x46 | 0x57..=0x58 => {
+            0x01 | 0x0E..=0x0F | 0x1C..=0x1D | 0x2A | 0x36 | 0x38 | 0x3A..=0x46 | 0x57..=0x58 => {
                 unsafe { Ok(core::mem::transmute::<u8, SpecialKey>(key)) }
             },
-            0x81..=0x8B | 0x8E..=0x8F | 0x9C..=0x9D | 0xAA | 0xB6 | 0xB8 | 0xBA..=0xC6 | 0xD7..=0xD8 => {
+            0x81 | 0x8E..=0x8F | 0x9C..=0x9D | 0xAA | 0xB6 | 0xB8 | 0xBA..=0xC6 | 0xD7..=0xD8 => {
                 unsafe { Ok(core::mem::transmute::<u8, SpecialKey>(key - 0x80)) }
             },
             _ => Err(()),
