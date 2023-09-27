@@ -66,13 +66,13 @@ impl FrameBufferWriter {
     }
 
     fn backspace(&mut self) {
-        if self.x == BORDER_PADDING {
-            if self.y != BORDER_PADDING {
+        if self.x <= BORDER_PADDING {
+            if self.y > BORDER_PADDING {
                 self.y -= CHAR_RASTER_HEIGHT.val() + LINE_SPACING;
                 self.x = self.width() - BORDER_PADDING - CHAR_RASTER_WIDTH;
             }
         } else {
-            self.x -= CHAR_RASTER_WIDTH;
+            self.x -= CHAR_RASTER_WIDTH + LETTER_SPACING;
         }
 
         for (y, row) in get_rasterized_char(' ').raster().iter().enumerate() {
@@ -124,9 +124,9 @@ impl FrameBufferWriter {
     fn write_pixel(&mut self, x: usize, y: usize, intensity: u8) {
         let pixel_offset = y * self.info.stride + x;
         let color = match self.info.pixel_format {
-            PixelFormat::Bgr => [intensity / 2, intensity, intensity, 0],
+            PixelFormat::Bgr => [intensity, intensity, intensity, 0],
             PixelFormat::U8 => [if intensity > 200 { 0xFF } else { 0x0 }, 0, 0, 0],
-            _ => [intensity, intensity, intensity / 2, 0],
+            _ => [intensity, intensity, intensity, 0],
         };
 
         let bytes_per_pixel = self.info.bytes_per_pixel;
