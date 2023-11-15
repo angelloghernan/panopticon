@@ -14,6 +14,7 @@ panic = "abort"
 [dependencies]
 bootloader_api = "0.11"
 volatile = "0.2.6"
+x86_64 = "0.14.11"
 
 [dependencies.noto-sans-mono-bitmap]
 version = "0.2.0"
