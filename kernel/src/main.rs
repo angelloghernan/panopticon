@@ -3,21 +3,32 @@
 #![feature(const_mut_refs)]
 #![feature(abi_x86_interrupt)]
 #![feature(maybe_uninit_uninit_array)]
+#![feature(offset_of)]
 
 mod klib;
-use klib::idt;
-use klib::pic;
+mod memory;
+mod allocator;
 use pic::PIC;
-use klib::x86_64;
+use klib::pic;
+use klib::idt;
 use klib::pic::Irq;
 use idt::StackFrame;
+use x86_64::VirtAddr;
 use crate::klib::ps2;
 use ps2::keyboard::KeyCode;
 use ps2::keyboard::KEYBOARD;
 use ps2::keyboard::SpecialKey;
 use lazy_static::lazy_static;
 use klib::graphics::framebuffer;
+use crate::memory::init_page_table;
+use x86_64::instructions::interrupts;
+use crate::memory::BootInfoFrameAllocator;
+use x86_64::structures::paging::Translate;
+use bootloader_api::config::{BootloaderConfig, Mapping};
 use bootloader_api::{entry_point, BootInfo, info::FrameBuffer};
+
+extern crate alloc;
+use alloc::boxed::Box;
 
 lazy_static! {
     static ref IDT: idt::DescriptorTable = {
@@ -31,18 +42,25 @@ lazy_static! {
 }
 
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
-    let framebuf = boot_info.framebuffer.as_mut().unwrap();
-    init(framebuf);
+    init(boot_info);
+
     loop {
-        x86_64::without_interrupts(|| 
+        interrupts::without_interrupts(||
             if let Some(key) = KEYBOARD.lock().pop_key() {
                 print_key(key)
-            });
-        x86_64::hlt();
+            }
+        );
+        x86_64::instructions::hlt();
     }
 }
 
-entry_point!(kernel_main);
+pub static BOOTLOADER_CONFIG: BootloaderConfig = {
+    let mut config = BootloaderConfig::new_default();
+    config.mappings.physical_memory = Some(Mapping::Dynamic);
+    config
+};
+
+entry_point!(kernel_main, config = &BOOTLOADER_CONFIG);
 
 fn print_key(key: KeyCode) {
     use KeyCode::*;
@@ -72,8 +90,8 @@ fn print_key(key: KeyCode) {
     }
 }
 
-fn init(boot_framebuffer: &'static mut FrameBuffer) {
-    unsafe { framebuffer::init_framebuffer(boot_framebuffer) };
+fn init(boot_info: &'static mut BootInfo) {
+    unsafe { framebuffer::init_framebuffer(boot_info.framebuffer.as_mut().unwrap()) };
     IDT.load();
     unsafe {
         let mut pic_guard = PIC.lock();
@@ -84,7 +102,15 @@ fn init(boot_framebuffer: &'static mut FrameBuffer) {
         let mut keyboard = KEYBOARD.lock();
         keyboard.enable();
     }
-    x86_64::enable_interrupts();
+
+    let mut frame_allocator = unsafe { BootInfoFrameAllocator::init(&boot_info.memory_regions) };
+
+    let phys_mem_offset = VirtAddr::new(boot_info.physical_memory_offset.into_option().unwrap());
+    let mut mapper = unsafe { init_page_table(phys_mem_offset) };
+
+    allocator::init_heap(&mut mapper, &mut frame_allocator).expect("Failed to initialize heap");
+
+    interrupts::enable();
 }
 
 use core::panic::PanicInfo;
