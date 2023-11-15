@@ -1,6 +1,6 @@
 use core::fmt;
 use spin::Mutex;
-use crate::x86_64;
+use crate::klib::x86_64;
 use volatile::Volatile;
 use lazy_static::lazy_static;
 

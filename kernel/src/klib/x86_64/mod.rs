@@ -1,5 +1,3 @@
-pub mod pagetable;
-
 use core::arch::asm;
 use core::fmt;
 
@@ -177,5 +175,17 @@ impl fmt::Debug for CanonicalAddress {
         f.debug_tuple("CanonicalAddress")
          .field(&format_args!("{:#x}", self.0))
          .finish()
+    }
+}
+
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct PhysicalAddress(u64);
+
+impl PhysicalAddress {
+    /// ## Safety
+    /// Bits 52 to 64 must be 0.
+    pub unsafe fn new_unsafe(addr: u64) -> Self {
+        PhysicalAddress(addr)
     }
 }
