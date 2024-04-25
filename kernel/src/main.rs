@@ -1,31 +1,39 @@
 #![no_std]
 #![no_main]
+#![feature(rustc_attrs)]
 #![feature(const_mut_refs)]
 #![feature(abi_x86_interrupt)]
 #![feature(maybe_uninit_uninit_array)]
+#![feature(generic_const_exprs)]
 #![feature(offset_of)]
 
+mod allocator;
 mod klib;
 mod memory;
-mod allocator;
-use pic::PIC;
-use klib::pic;
-use klib::idt;
-use klib::pic::Irq;
-use idt::StackFrame;
-use x86_64::VirtAddr;
 use crate::klib::ps2;
-use ps2::keyboard::KeyCode;
-use ps2::keyboard::KEYBOARD;
-use ps2::keyboard::SpecialKey;
-use lazy_static::lazy_static;
-use klib::graphics::framebuffer;
 use crate::memory::init_page_table;
-use x86_64::instructions::interrupts;
 use crate::memory::BootInfoFrameAllocator;
-use x86_64::structures::paging::Translate;
 use bootloader_api::config::{BootloaderConfig, Mapping};
-use bootloader_api::{entry_point, BootInfo, info::FrameBuffer};
+use bootloader_api::{entry_point, info::FrameBuffer, BootInfo};
+use idt::StackFrame;
+use klib::acpi::rsdp::Rsdp;
+use klib::graphics::framebuffer;
+use klib::idt;
+use klib::pic;
+use klib::pic::Irq;
+use lazy_static::lazy_static;
+use pic::PIC;
+use ps2::keyboard::KeyCode;
+use ps2::keyboard::SpecialKey;
+use ps2::keyboard::KEYBOARD;
+use x86_64::instructions::interrupts;
+use x86_64::structures::paging::FrameAllocator;
+use x86_64::structures::paging::Mapper;
+use x86_64::structures::paging::Page;
+use x86_64::structures::paging::PageTableFlags;
+use x86_64::structures::paging::Size4KiB;
+use x86_64::structures::paging::Translate;
+use x86_64::VirtAddr;
 
 extern crate alloc;
 use alloc::boxed::Box;
@@ -45,11 +53,11 @@ fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     init(boot_info);
 
     loop {
-        interrupts::without_interrupts(||
+        interrupts::without_interrupts(|| {
             if let Some(key) = KEYBOARD.lock().pop_key() {
                 print_key(key)
             }
-        );
+        });
         x86_64::instructions::hlt();
     }
 }
@@ -78,7 +86,7 @@ fn print_key(key: KeyCode) {
             };
 
             print!("{}", ch as char);
-        },
+        }
         SpecialDown(SpecialKey::Enter) => print!("\n"),
         SpecialDown(SpecialKey::Backspace) => print!("\x08"),
         SpecialDown(SpecialKey::LeftShift) => unsafe { LSHIFT_PRESSED = true },
@@ -86,12 +94,15 @@ fn print_key(key: KeyCode) {
         SpecialDown(SpecialKey::CapsLock) => unsafe { CAPS_PRESSED = !CAPS_PRESSED },
         SpecialUp(SpecialKey::LeftShift) => unsafe { LSHIFT_PRESSED = false },
         SpecialUp(SpecialKey::RightShift) => unsafe { RSHIFT_PRESSED = false },
-        _ => {},
+        _ => {}
     }
 }
 
 fn init(boot_info: &'static mut BootInfo) {
     unsafe { framebuffer::init_framebuffer(boot_info.framebuffer.as_mut().unwrap()) };
+
+    // let rsdp = unsafe { Rsdp::get(rsdp_addr as usize) };
+
     IDT.load();
     unsafe {
         let mut pic_guard = PIC.lock();
@@ -111,6 +122,24 @@ fn init(boot_info: &'static mut BootInfo) {
     allocator::init_heap(&mut mapper, &mut frame_allocator).expect("Failed to initialize heap");
 
     interrupts::enable();
+
+    let rsdp_addr = boot_info.rsdp_addr.into_option().unwrap();
+    let rsdp_page: Page<Size4KiB> = Page::containing_address(VirtAddr::new(rsdp_addr));
+    let frame = frame_allocator
+        .allocate_frame()
+        .expect("Failed to map rsdp");
+    let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+    unsafe {
+        mapper
+            .map_to(rsdp_page, frame, flags, &mut frame_allocator)
+            .expect("Failed to map rsdp")
+            .flush()
+    };
+
+    println!("Rsdp addr is {:x}", rsdp_addr);
+
+    let rsdp = unsafe { Rsdp::get(rsdp_addr as usize) };
+    println!("Rsdp validation returns {}", rsdp.validate_checksum());
 }
 
 use core::panic::PanicInfo;
@@ -127,10 +156,11 @@ extern "x86-interrupt" fn keyboard_handler(_stack_frame: StackFrame) {
         let key = { keyboard.read_byte() };
 
         match key {
-            Ok(byte) => { let _ = keyboard.push_key(byte); },
+            Ok(byte) => {
+                let _ = keyboard.push_key(byte);
+            }
             Err(_) => println!("Couldn't get key"),
         }
-
 
         let _ = keyboard.send_next_command();
     }

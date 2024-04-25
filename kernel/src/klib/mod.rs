@@ -6,6 +6,6 @@ pub mod vga_console;
 pub mod graphics;
 pub mod util;
 
-mod acpi;
+pub mod acpi;
 
 pub mod containers;

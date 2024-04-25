@@ -1,3 +1,5 @@
+mod sleb;
+
 use spin::Mutex;
 use core::cmp::max;
 use core::alloc::Layout;
@@ -12,7 +14,7 @@ use x86_64::{
 
 pub const HEAP_START: u64 = 0x_4444_4444_0000u64;
 const KB: u64 = 1024;
-pub const HEAP_SIZE: u64 = 1024 * KB;
+pub const HEAP_SIZE: u64 = 4096 * KB;
 pub const HEAP_END: u64 = HEAP_START + HEAP_SIZE;
 
 pub const PAGESIZE: u64 = 4096;

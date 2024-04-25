@@ -41,12 +41,12 @@ impl Rsdp {
     }
 
     pub fn validate_checksum(&self) -> bool {
-        let (rev_1_bytes, rev_2_bytes) = as_u8_slice(self) 
+        let (rev_1_bytes, rev_2_bytes) = as_u8_slice(self)
                                          .split_at(core::mem::offset_of!(Rsdp, length));
 
         let checksum1 = rev_1_bytes
                         .iter()
-                        .fold(0, |acc: u8, &x| acc.wrapping_add(x));
+                        .fold(0u8, |acc, &x| acc.wrapping_add(x));
 
         if checksum1.wrapping_sub(self.checksum) != self.checksum {
             return false;
@@ -58,7 +58,7 @@ impl Rsdp {
 
         let checksum2 = rev_2_bytes
                         .iter()
-                        .fold(0, |acc: u8, &x| acc.wrapping_add(x));
+                        .fold(0u8, |acc, &x| acc.wrapping_add(x));
 
         checksum2.wrapping_sub(self.extended_checksum) == self.extended_checksum
     }
