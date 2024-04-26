@@ -51,14 +51,13 @@ impl SlebMetadata {
     }
 }
 
-const ENTRIES_PER_PAGE: usize = (PAGESIZE as usize) / core::mem::size_of::<SlebMetadata>();
+const ENTRIES_PER_PAGE: usize = (PAGESIZE as usize) / core::mem::size_of::<SlebMetadata>() - 1;
 
 #[repr(C)]
 struct SlebMetadataPage {
+    _padding: [u8; 16], // reserved for future use
     metadata: [SlebMetadata; ENTRIES_PER_PAGE],
 }
-
-const ONE_MIB: usize = 1048576;
 
 impl SlebMetadataPage {
     /// Initialize a page for SLEB metadata
@@ -66,7 +65,7 @@ impl SlebMetadataPage {
     /// The pointer must be valid and point to a contiguous region of memory at least 1 MiB in
     /// size. The pointer must remain valid for the entire lifetime of this page.
     pub unsafe fn init(page: *mut u8) -> *mut Self {
-        page.write_bytes(0, ONE_MIB);
+        page.write_bytes(0, PAGESIZE as usize);
         page as *mut Self
     }
 
@@ -82,6 +81,7 @@ impl SlebMetadataPage {
 
     // Find and return an empty page, making its type equal to the type passed in.
     fn find_empty_page(&mut self, md_type: MetadataType) -> Option<u32> {
+        // Note: we skip the first page, because it indexes this page
         for (i, md) in self.metadata.iter_mut().enumerate() {
             if let MetadataType::Empty = md.get_type() {
                 md.bits.set_type(md_type as u8);
@@ -109,7 +109,13 @@ impl SlebMetadataPage {
             None => 0u64 as *mut u8,
             Some(i) => {
                 let page = self.index_to_mut_ptr(i) as *mut TinyMetadataPage;
-                unsafe { TinyMetadataPage::find_free_slot(page) }
+                unsafe {
+                    // Reset bitfield
+                    for bits in (*page).bitfield.iter_mut() {
+                        *bits = 0;
+                    }
+                    TinyMetadataPage::find_free_slot(page)
+                }
             }
         }
     }
@@ -150,7 +156,7 @@ impl SlebMetadataPage {
         }
     }
 
-    fn alloc(&mut self, size: usize) -> *mut u8 {
+    pub fn alloc(&mut self, size: usize) -> *mut u8 {
         match size {
             0..=32 => self.alloc_tiny(),
             33..=64 => self.alloc_medium(0),
@@ -160,6 +166,68 @@ impl SlebMetadataPage {
             513..=1024 => self.alloc_medium(4),
             1025..=2048 => self.alloc_medium(5),
             _ => panic!("Bad allocation size"),
+        }
+    }
+
+    unsafe fn free_tiny(&mut self, md_index: u32, ptr: *mut u8) {
+        let ptr_addr = ptr as usize;
+        let ptr_offset = ptr_addr % (PAGESIZE as usize);
+        let page = self.index_to_mut_ptr(md_index) as *mut TinyMetadataPage;
+        let slot = ptr_offset / 32;
+
+        debug_assert!((*page).bitfield[slot / 64] & (1u64 << (slot % 64)) != 0);
+
+        (*page).bitfield[slot / 64] &= !(1u64 << (slot % 64));
+        if (*page).bitfield.iter().all(|&x| x == 0) {
+            // This bitfield is empty. Make the bucket point to it in the linked list.
+            let mut bucket = TINY_BUCKETS.lock();
+            match bucket[0].get() {
+                None => bucket[0].set(md_index),
+                Some(i) => {
+                    self.metadata[i as usize].bits.set_prev(md_index);
+                    bucket[0].set(md_index);
+                    self.metadata[md_index as usize].bits.set_next(i);
+                }
+            }
+        }
+    }
+
+    unsafe fn free_medium(&mut self, md_index: u32, bucket_index: u32, ptr: *mut u8) {
+        let ptr_addr = ptr as usize;
+        let ptr_offset = ptr_addr % (PAGESIZE as usize);
+        let slot = ptr_offset / 32;
+
+        debug_assert!(self.metadata[md_index as usize].extra_bits & 1u64 << slot != 0);
+
+        self.metadata[md_index as usize].extra_bits &= !(1u64 << slot);
+
+        if self.metadata[md_index as usize].extra_bits == 0 {
+            let mut bucket = MEDIUM_BUCKETS.lock();
+            match bucket[bucket_index as usize].get() {
+                None => bucket[bucket_index as usize].set(md_index),
+                Some(i) => {
+                    self.metadata[i as usize].bits.set_prev(md_index);
+                    bucket[bucket_index as usize].set(md_index);
+                    self.metadata[md_index as usize].bits.set_next(i);
+                }
+            }
+        }
+    }
+
+    pub unsafe fn free(&mut self, ptr: *mut u8) {
+        let ptr_addr = ptr as usize;
+        let self_ptr = self as *mut SlebMetadataPage as *mut u8 as usize;
+        let distance = (ptr_addr - self_ptr) as usize;
+        let index = distance / 4096 - 1;
+        match self.metadata[index].get_type() {
+            MetadataType::Tiny32 => self.free_tiny(index as u32, ptr),
+            MetadataType::Medium64 => self.free_medium(index as u32, 0, ptr),
+            MetadataType::Medium128 => self.free_medium(index as u32, 1, ptr),
+            MetadataType::Medium256 => self.free_medium(index as u32, 2, ptr),
+            MetadataType::Medium512 => self.free_medium(index as u32, 3, ptr),
+            MetadataType::Medium1024 => self.free_medium(index as u32, 4, ptr),
+            MetadataType::Medium2048 => self.free_medium(index as u32, 5, ptr),
+            _ => panic!("Passed an \"empty\" page"),
         }
     }
 }
