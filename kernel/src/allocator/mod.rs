@@ -1,10 +1,11 @@
 mod sleb;
 
-use spin::Mutex;
-use core::cmp::max;
-use core::alloc::Layout;
+use crate::println;
 use core::alloc::GlobalAlloc;
+use core::alloc::Layout;
+use core::cmp::max;
 use lazy_static::lazy_static;
+use spin::Mutex;
 use x86_64::{
     structures::paging::{
         mapper::MapToError, FrameAllocator, Mapper, Page, PageTableFlags, Size4KiB,
@@ -27,8 +28,22 @@ const NUM_BLOCKS: u64 = HEAP_SIZE / 4096;
 
 const NO_BLOCK: u16 = 0xFFFF;
 
+#[global_allocator]
+static ALLOCATOR: Locked<BuddyAllocator> = Locked::new(BuddyAllocator::new());
+
+lazy_static! {
+    static ref SLEB_ALLOCATOR: Locked<&'static mut sleb::SlebMetadataPage> = {
+        unsafe {
+            let ptr = ALLOCATOR.alloc(Layout::from_size_align_unchecked(1048576, 1));
+            let sleb = sleb::SlebMetadataPage::init(ptr);
+
+            Locked::new(&mut *(sleb))
+        }
+    };
+}
+
 pub struct Locked<A> {
-    inner: spin::Mutex<A>
+    inner: spin::Mutex<A>,
 }
 
 impl<A> Locked<A> {
@@ -65,7 +80,7 @@ impl Block {
         let index_64 = index as u64;
         return (HEAP_START + index_64 * BLOCK_SIZE) as *mut u8;
     }
-    
+
     fn get_buddy_index(order: u16, address: u64) -> Option<u16> {
         let shifted_address = address - HEAP_START;
         let is_lower = shifted_address % (1 << (order + 1 + START_ORDER)) == 0;
@@ -74,7 +89,6 @@ impl Block {
         } else {
             shifted_address.checked_sub(1 << (order + START_ORDER))
         };
-
 
         match buddy_address {
             None => None,
@@ -93,9 +107,6 @@ struct BuddyAllocator {
     blocks: [Block; NUM_BLOCKS as usize],
     heads: [u16; NUM_ORDERS as usize],
 }
-
-#[global_allocator]
-static ALLOCATOR: Locked<BuddyAllocator> = Locked::new(BuddyAllocator::new());
 
 impl BuddyAllocator {
     const fn new() -> Self {
@@ -127,11 +138,10 @@ impl BuddyAllocator {
 
     fn pop_head(&mut self, order: u16) -> Option<u16> {
         let head_index = self.heads[order as usize];
-        
-        if head_index == NO_BLOCK {
-            return None
-        }
 
+        if head_index == NO_BLOCK {
+            return None;
+        }
 
         self.blocks[head_index as usize].free = false;
 
@@ -144,7 +154,7 @@ impl BuddyAllocator {
     fn push_block(&mut self, order: u16, block_index: u16) {
         debug_assert!(!self.blocks[block_index as usize].free);
         let head_index = self.heads[order as usize];
-        
+
         if head_index != NO_BLOCK {
             self.blocks[head_index as usize].previous = block_index;
         }
@@ -189,17 +199,24 @@ fn round_up_pow2(mut num: u64) -> u64 {
 
 unsafe impl GlobalAlloc for Locked<BuddyAllocator> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        if layout.size() <= 2048 {
+            let mut sleb_alloc = SLEB_ALLOCATOR.lock();
+            let ptr = sleb_alloc.alloc(layout.size());
+            println!("Returning {:#x}", ptr as usize);
+            return ptr;
+        }
+
         let alloc_size = if layout.size() > layout.align() {
             max(PAGESIZE, round_up_pow2(layout.size() as u64)).checked_ilog2()
         } else {
             max(PAGESIZE, round_up_pow2(layout.align() as u64)).checked_ilog2()
         };
-        
+
         // Safety: The checked_ilog2 call cannot fail since GlobalAlloc
         // must never be called with layout size == 0
-        let order_start = unsafe {
-            (alloc_size.unwrap_unchecked() - PAGESIZE.ilog2()) as u16
-        };
+        let alloc_size = unsafe { alloc_size.unwrap_unchecked() };
+
+        let order_start = (alloc_size - PAGESIZE.ilog2()) as u16;
 
         let mut allocator = self.lock();
 
@@ -224,6 +241,13 @@ unsafe impl GlobalAlloc for Locked<BuddyAllocator> {
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, _layout: Layout) {
+        {
+            let mut sleb = SLEB_ALLOCATOR.lock();
+            if sleb.within_bounds(ptr) {
+                return sleb.free(ptr);
+            }
+        };
+
         let block_index = BuddyAllocator::get_block_index(ptr);
         let block_addr = ptr as u64;
         let mut allocator = self.lock();
@@ -254,13 +278,11 @@ pub fn init_heap(
     };
 
     for page in page_range {
-      let frame = frame_allocator
+        let frame = frame_allocator
             .allocate_frame()
             .ok_or(MapToError::FrameAllocationFailed)?;
         let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
-        unsafe {
-            mapper.map_to(page, frame, flags, frame_allocator)?.flush()
-        };
+        unsafe { mapper.map_to(page, frame, flags, frame_allocator)?.flush() };
     }
 
     Ok(())

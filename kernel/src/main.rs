@@ -86,6 +86,14 @@ fn print_key(key: KeyCode) {
             };
 
             print!("{}", ch as char);
+
+            let b = Box::new([1, 2, 3, 4]);
+
+            for num in b.iter() {
+                print!("{}", *num);
+            }
+
+            print!("\n");
         }
         SpecialDown(SpecialKey::Enter) => print!("\n"),
         SpecialDown(SpecialKey::Backspace) => print!("\x08"),

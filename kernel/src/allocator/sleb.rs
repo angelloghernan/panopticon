@@ -1,4 +1,5 @@
 use super::PAGESIZE;
+use crate::println;
 use bitfield::bitfield;
 use spin::Mutex;
 
@@ -52,9 +53,10 @@ impl SlebMetadata {
 }
 
 const ENTRIES_PER_PAGE: usize = (PAGESIZE as usize) / core::mem::size_of::<SlebMetadata>() - 1;
+const ONE_MIB: usize = 1048576;
 
 #[repr(C)]
-struct SlebMetadataPage {
+pub struct SlebMetadataPage {
     _padding: [u8; 16], // reserved for future use
     metadata: [SlebMetadata; ENTRIES_PER_PAGE],
 }
@@ -69,6 +71,16 @@ impl SlebMetadataPage {
         page as *mut Self
     }
 
+    pub fn within_bounds(&self, ptr: *const u8) -> bool {
+        let self_ptr = self as *const SlebMetadataPage as *const u8;
+        let self_addr = self_ptr as usize;
+        let ptr_addr = ptr as usize;
+
+        println!("{:#x} > {:#x}?", ptr_addr, self_addr);
+
+        self_addr < ptr_addr && ptr_addr < self_addr + ONE_MIB
+    }
+
     fn index_to_ptr(&self, index: u32) -> *const u8 {
         let base = self as *const SlebMetadataPage as u64;
         (base + PAGESIZE * (index + 1) as u64) as *const u8
@@ -81,7 +93,6 @@ impl SlebMetadataPage {
 
     // Find and return an empty page, making its type equal to the type passed in.
     fn find_empty_page(&mut self, md_type: MetadataType) -> Option<u32> {
-        // Note: we skip the first page, because it indexes this page
         for (i, md) in self.metadata.iter_mut().enumerate() {
             if let MetadataType::Empty = md.get_type() {
                 md.bits.set_type(md_type as u8);
@@ -92,6 +103,7 @@ impl SlebMetadataPage {
     }
 
     fn alloc_tiny(&mut self) -> *mut u8 {
+        println!("Tiny called");
         let mut buckets = TINY_BUCKETS.lock();
         while let Some(i) = buckets[0].get() {
             let metadata = self.metadata[i as usize].clone();
@@ -149,7 +161,7 @@ impl SlebMetadataPage {
         match self.find_empty_page(md_type) {
             None => 0u64 as *mut u8,
             Some(i) => {
-                self.metadata[i as usize].extra_bits |= 1;
+                self.metadata[i as usize].extra_bits = 1;
                 let page = self.index_to_mut_ptr(i) as *mut MetadataPage;
                 unsafe { MetadataPage::take_slot(page, 0, 1 << (index + 6)) }
             }
@@ -170,6 +182,7 @@ impl SlebMetadataPage {
     }
 
     unsafe fn free_tiny(&mut self, md_index: u32, ptr: *mut u8) {
+        println!("Free tiny with {md_index} and {:#x}", ptr as usize);
         let ptr_addr = ptr as usize;
         let ptr_offset = ptr_addr % (PAGESIZE as usize);
         let page = self.index_to_mut_ptr(md_index) as *mut TinyMetadataPage;
@@ -215,6 +228,7 @@ impl SlebMetadataPage {
     }
 
     pub unsafe fn free(&mut self, ptr: *mut u8) {
+        println!("Free called");
         let ptr_addr = ptr as usize;
         let self_ptr = self as *mut SlebMetadataPage as *mut u8 as usize;
         let distance = (ptr_addr - self_ptr) as usize;
@@ -257,7 +271,7 @@ impl TinyMetadataPage {
     /// The pointer to "page" must be valid. (Live, pointing to actual TinyMetadataPage object)
     pub unsafe fn find_free_slot(page: *mut TinyMetadataPage) -> *mut u8 {
         for (i, bits) in (0..).zip((*page).bitfield) {
-            if bits != 0 {
+            if bits != u64::MAX {
                 let trailing = bits.trailing_ones();
                 let slot = i * 64 + trailing;
                 (*page).bitfield[i as usize] |= 1u64 << trailing;
