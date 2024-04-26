@@ -1,6 +1,6 @@
 mod sleb;
 
-use crate::println;
+// use crate::println;
 use core::alloc::GlobalAlloc;
 use core::alloc::Layout;
 use core::cmp::max;
@@ -199,10 +199,10 @@ fn round_up_pow2(mut num: u64) -> u64 {
 
 unsafe impl GlobalAlloc for Locked<BuddyAllocator> {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        if layout.size() <= 2048 {
+        let size = max(layout.size(), layout.align());
+        if size <= 2048 {
             let mut sleb_alloc = SLEB_ALLOCATOR.lock();
-            let ptr = sleb_alloc.alloc(layout.size());
-            println!("Returning {:#x}", ptr as usize);
+            let ptr = sleb_alloc.alloc(size);
             return ptr;
         }
 

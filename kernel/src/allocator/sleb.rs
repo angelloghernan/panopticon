@@ -33,7 +33,7 @@ static NONE_BUCKET: Mutex<BucketIndex> = Mutex::new(BucketIndex::new(BUCKET_INDE
 #[derive(Clone)]
 struct SlebMetadata {
     pub bits: SlebBits,
-    pub extra_bits: u64,
+    pub extra_bits: u64, // Extra bits used for medium-sized blocks, as a bitmap
 }
 
 impl SlebMetadata {
@@ -76,8 +76,6 @@ impl SlebMetadataPage {
         let self_addr = self_ptr as usize;
         let ptr_addr = ptr as usize;
 
-        println!("{:#x} > {:#x}?", ptr_addr, self_addr);
-
         self_addr < ptr_addr && ptr_addr < self_addr + ONE_MIB
     }
 
@@ -103,7 +101,6 @@ impl SlebMetadataPage {
     }
 
     fn alloc_tiny(&mut self) -> *mut u8 {
-        println!("Tiny called");
         let mut buckets = TINY_BUCKETS.lock();
         while let Some(i) = buckets[0].get() {
             let metadata = self.metadata[i as usize].clone();
@@ -148,20 +145,22 @@ impl SlebMetadataPage {
             }
         }
 
-        let md_type = match index {
-            0 => MetadataType::Medium64,
-            1 => MetadataType::Medium128,
-            2 => MetadataType::Medium256,
-            3 => MetadataType::Medium512,
-            4 => MetadataType::Medium1024,
-            5 => MetadataType::Medium2048,
+        // Extra bits (the bitmap) has the first block taken, along with any blocks past the end of
+        // the page being "used".
+        let (md_type, extra_bits) = match index {
+            0 => (MetadataType::Medium64, 0x0000_0000_0000_0001u64),
+            1 => (MetadataType::Medium128, 0xFFFF_FFFF_0000_0001u64),
+            2 => (MetadataType::Medium256, 0xFFFF_FFFF_FFFF_0001u64),
+            3 => (MetadataType::Medium512, 0xFFFF_FFFF_FFFF_FF01u64),
+            4 => (MetadataType::Medium1024, 0xFFFF_FFFF_FFFF_FFF1u64),
+            5 => (MetadataType::Medium2048, 0xFFFF_FFFF_FFFF_FFFDu64),
             _ => unreachable!(),
         };
 
         match self.find_empty_page(md_type) {
             None => 0u64 as *mut u8,
             Some(i) => {
-                self.metadata[i as usize].extra_bits = 1;
+                self.metadata[i as usize].extra_bits = extra_bits;
                 let page = self.index_to_mut_ptr(i) as *mut MetadataPage;
                 unsafe { MetadataPage::take_slot(page, 0, 1 << (index + 6)) }
             }
@@ -190,9 +189,13 @@ impl SlebMetadataPage {
 
         debug_assert!((*page).bitfield[slot / 64] & (1u64 << (slot % 64)) != 0);
 
+        let was_full = (*page).bitfield.iter().all(|&x| x == u64::MAX);
+
         (*page).bitfield[slot / 64] &= !(1u64 << (slot % 64));
-        if (*page).bitfield.iter().all(|&x| x == 0) {
-            // This bitfield is empty. Make the bucket point to it in the linked list.
+        if was_full {
+            // This bitfield has some space left. Make the bucket point to it in the linked list.
+            // TODO: Make this the tail instead. Since it only has one free slot it should come
+            // last in the priority.
             let mut bucket = TINY_BUCKETS.lock();
             match bucket[0].get() {
                 None => bucket[0].set(md_index),
@@ -212,9 +215,14 @@ impl SlebMetadataPage {
 
         debug_assert!(self.metadata[md_index as usize].extra_bits & 1u64 << slot != 0);
 
+        let was_full = self.metadata[md_index as usize].extra_bits == u64::MAX;
+
         self.metadata[md_index as usize].extra_bits &= !(1u64 << slot);
 
-        if self.metadata[md_index as usize].extra_bits == 0 {
+        if was_full {
+            // This bitfield has some space left. Make the bucket point to it in the linked list.
+            // TODO: Make this the tail instead. Since it only has one free slot it should come
+            // last in the priority.
             let mut bucket = MEDIUM_BUCKETS.lock();
             match bucket[bucket_index as usize].get() {
                 None => bucket[bucket_index as usize].set(md_index),
