@@ -195,7 +195,7 @@ impl SlebMetadataPage {
         if was_full {
             // This bitfield has some space left. Make the bucket point to it in the linked list.
             // TODO: Make this the tail instead. Since it only has one free slot it should come
-            // last in the priority.
+            // *last* in the priority. Buckets should hold heads and tails.
             let mut bucket = TINY_BUCKETS.lock();
             match bucket[0].get() {
                 None => bucket[0].set(md_index),
@@ -222,7 +222,7 @@ impl SlebMetadataPage {
         if was_full {
             // This bitfield has some space left. Make the bucket point to it in the linked list.
             // TODO: Make this the tail instead. Since it only has one free slot it should come
-            // last in the priority.
+            // *last* in the priority. Buckets should hold heads and tails.
             let mut bucket = MEDIUM_BUCKETS.lock();
             match bucket[bucket_index as usize].get() {
                 None => bucket[bucket_index as usize].set(md_index),
