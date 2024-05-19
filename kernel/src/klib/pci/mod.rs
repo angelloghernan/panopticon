@@ -1,3 +1,4 @@
+pub mod ide_controller;
 pub mod pcistate;
 use bitfield::bitfield;
 
@@ -8,7 +9,7 @@ const NO_DEVICE: u16 = 0xFFFF;
 
 #[repr(u8)]
 #[derive(Clone, Copy)]
-enum Register {
+pub enum Register {
     VendorId = 0x0,
     DeviceId = 0x2,
     Command = 0x4,

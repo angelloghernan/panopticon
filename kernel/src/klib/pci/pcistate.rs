@@ -1,21 +1,27 @@
 use super::Register;
-use crate::klib::pci::{
-    CommandRegister, CONFIG_ADDRESS, CONFIG_DATA, MAX_BUSES, MAX_FUNCS, MAX_SLOTS,
-};
+use crate::klib::pci::{CommandRegister, CONFIG_ADDRESS, CONFIG_DATA};
 use x86_64::instructions::port::Port;
 use x86_64::structures::port::PortWrite;
 
-struct PCIState {}
+const MAX_BUSES: u32 = 0x8;
+const MAX_SLOTS: u32 = 32;
+const MAX_FUNCS: u32 = 8;
+
+pub struct PCIState {}
 
 impl PCIState {
-    unsafe fn config_read_32(
+    pub fn new() -> Self {
+        Self {}
+    }
+
+    pub unsafe fn config_read_32(
         &self,
         bus: u32,
         slot: u32,
         func_number: u32,
         offset: Register,
     ) -> u32 {
-        let address = pci_address(bus as u32, slot as u32, func_number as u32, offset);
+        let address = pci_address(bus, slot, func_number, offset);
 
         let mut address_port = Port::new(CONFIG_ADDRESS as u16);
         address_port.write(address);
@@ -26,14 +32,14 @@ impl PCIState {
         return data_port.read();
     }
 
-    unsafe fn config_read_16(
+    pub unsafe fn config_read_16(
         &self,
         bus: u32,
         slot: u32,
         func_number: u32,
         offset: Register,
     ) -> u16 {
-        let address = pci_address(bus as u32, slot as u32, func_number as u32, offset);
+        let address = pci_address(bus, slot, func_number, offset);
 
         let mut address_port = Port::new(CONFIG_ADDRESS as u16);
         address_port.write(address);
@@ -44,7 +50,13 @@ impl PCIState {
         return ((data_port.read() >> ((offset as u8 & 2) * 8)) & 0xFFFF) as u16;
     }
 
-    unsafe fn config_read_8(&self, bus: u32, slot: u32, func_number: u32, offset: Register) -> u8 {
+    pub unsafe fn config_read_8(
+        &self,
+        bus: u32,
+        slot: u32,
+        func_number: u32,
+        offset: Register,
+    ) -> u8 {
         let word = self.config_read_16(bus, slot, func_number, offset);
         let offset_u8 = offset as u8;
 
@@ -55,7 +67,7 @@ impl PCIState {
         }
     }
 
-    unsafe fn config_write<T>(
+    pub unsafe fn config_write<T>(
         &mut self,
         bus: u32,
         slot: u32,
@@ -74,7 +86,7 @@ impl PCIState {
         unsafe { data_port.write(data) }
     }
 
-    unsafe fn enable_interrupts(&mut self, bus: u32, slot: u32, func_number: u32) {
+    pub unsafe fn enable_interrupts(&mut self, bus: u32, slot: u32, func_number: u32) {
         let bytes = self.config_read_16(bus, slot, func_number, Register::Command);
 
         let mut command = CommandRegister(bytes);
@@ -84,7 +96,13 @@ impl PCIState {
         self.config_write(bus, slot, func_number, Register::Command, command.0);
     }
 
-    unsafe fn next_addr(&mut self, bus: u32, slot: u32, func: u32) -> (u32, u32, u32) {
+    /// Find and return the next valid PCI device address in a (bus, slot, func) tuple.
+    pub unsafe fn next_addr(
+        &mut self,
+        mut bus: u32,
+        mut slot: u32,
+        mut func: u32,
+    ) -> (u32, u32, u32) {
         let lthbc = self.config_read_32(bus, slot, func, Register::CacheLineSize);
 
         loop {

@@ -203,7 +203,9 @@ unsafe impl GlobalAlloc for Locked<BuddyAllocator> {
         if size <= 2048 {
             let mut sleb_alloc = SLEB_ALLOCATOR.lock();
             let ptr = sleb_alloc.alloc(size);
-            return ptr;
+            if !ptr.is_null() {
+                return ptr;
+            }
         }
 
         let alloc_size = if layout.size() > layout.align() {

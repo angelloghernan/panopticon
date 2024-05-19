@@ -3,9 +3,12 @@ use core::fmt;
 
 #[inline]
 pub fn hlt() {
-    unsafe {
-        asm!("hlt", options(nomem, nostack, preserves_flags))
-    }
+    unsafe { asm!("hlt", options(nomem, nostack, preserves_flags)) }
+}
+
+#[inline]
+pub fn pause() {
+    unsafe { asm!("pause", options(nomem, nostack, preserves_flags)) }
 }
 
 /// Read the "cs" register.
@@ -21,23 +24,17 @@ pub fn read_cs() -> u16 {
 /// Load idt located at the specified descriptor table pointer.
 #[inline]
 pub unsafe fn lidt(idt: &DescriptorTablePointer) {
-    unsafe {
-        asm!("lidt [{}]", in(reg) idt, options(readonly, nostack, preserves_flags))
-    }
+    unsafe { asm!("lidt [{}]", in(reg) idt, options(readonly, nostack, preserves_flags)) }
 }
 
 #[inline]
 pub fn enable_interrupts() {
-    unsafe {
-        asm!("sti", options(nostack, nomem))
-    }
+    unsafe { asm!("sti", options(nostack, nomem)) }
 }
 
 #[inline]
 pub fn disable_interrupts() {
-    unsafe {
-        asm!("cli", options(nostack, nomem))
-    }
+    unsafe { asm!("cli", options(nostack, nomem)) }
 }
 
 #[inline]
@@ -59,11 +56,10 @@ pub fn interrupts_enabled() -> bool {
 }
 
 #[inline]
-pub fn without_interrupts<F, R>(f: F) -> R 
+pub fn without_interrupts<F, R>(f: F) -> R
 where
-    F: FnOnce() -> R
+    F: FnOnce() -> R,
 {
-
     let enabled = interrupts_enabled();
 
     if enabled {
@@ -126,12 +122,9 @@ pub unsafe fn io_wait() {
     port_write_u8(0x80, 0x00);
 }
 
-
 #[inline]
 pub fn int3() {
-    unsafe {
-        asm!("int3", options(nostack, nomem))
-    }
+    unsafe { asm!("int3", options(nostack, nomem)) }
 }
 
 #[repr(C, packed(2))]
@@ -159,9 +152,10 @@ impl CanonicalAddress {
     pub fn new(addr: u64) -> Self {
         let mask = addr & 0xFFFF_0000_0000_0000;
 
-        if (mask != 0xFFFF_0000_0000_0000 && mask != 0x0) ||
-           (mask > 0 && addr & 0x8000_0000_0000 == 0) ||
-           (addr & 0x8000_0000_0000 != 0) {
+        if (mask != 0xFFFF_0000_0000_0000 && mask != 0x0)
+            || (mask > 0 && addr & 0x8000_0000_0000 == 0)
+            || (addr & 0x8000_0000_0000 != 0)
+        {
             panic!("Invalid address for canonical address");
         }
 
@@ -169,12 +163,12 @@ impl CanonicalAddress {
     }
 }
 
-impl fmt::Debug for CanonicalAddress {   
+impl fmt::Debug for CanonicalAddress {
     #[inline]
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_tuple("CanonicalAddress")
-         .field(&format_args!("{:#x}", self.0))
-         .finish()
+            .field(&format_args!("{:#x}", self.0))
+            .finish()
     }
 }
 
