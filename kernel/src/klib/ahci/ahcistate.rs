@@ -10,6 +10,11 @@ use pci::Register;
 use spin::RwLock;
 use util::Volatile;
 
+// TODO: change to dynamic var in ahci state, this is not true for all drives
+const SECTOR_SIZE: u32 = 512;
+
+const CFIS_COMMAND: u32 = 0x8027;
+
 #[repr(C)]
 pub struct AHCIState {
     dma: DMAState,
@@ -18,7 +23,7 @@ pub struct AHCIState {
     func: u32,
     sata_port: u32,
     // These are pointers because the port registers technically alias the drive registers.
-    // Drive registers are shared by all devices, so it needs a lock.
+    // Other drive register fields are shared by all devices, so it needs a lock.
     drive_registers: &'static RwLock<*mut Registers>,
 
     // Port registers are per-drive; other devices should not access.
@@ -34,7 +39,10 @@ pub struct AHCIState {
     num_slots_available: u16,
     slots_outstanding_mask: u16,
 
-    // This is modified by the hardware itself and our code. Shared across threads.
+    // This is modified by the hardware itself and our code.
+    // Can't use a reference here because the statuses will be too short-lived.
+    // TODO: clean this up to be safe. tbh, i'm just trying to rush through translating this from
+    // C++ code
     slot_status: [*mut u32; 32],
     // TODO: Add buffer cache
 }
@@ -100,6 +108,8 @@ impl AHCIState {
                     util::kernel_to_physical_address(ch.command_table_address);
             }
 
+            // Pretty much everything here is unsafe. Look at those pointer derefs!
+            // It's ok though, it's only dereferencing the port registers and the drive registers.
             unsafe {
                 use super::InterruptMasks::*;
                 use super::PortCommandMasks::*;
@@ -151,7 +161,7 @@ impl AHCIState {
 
                 let handle = ahci.push_buffer(0, &mut id_buf);
                 ahci.issue_meta(0, pci::ide_controller::Command::Identify, 0, u32::MAX);
-                unsafe { ahci.await_basic(0) };
+                ahci.await_basic(0);
                 ahci.clear_slot(handle);
 
                 ahci.num_sectors = id_buf[100].read() as usize
@@ -199,12 +209,53 @@ impl AHCIState {
                 ahci.irq = intr_line as u32;
 
                 // finally, clear pending interrupts again
-                (*ahci.port_registers).interrupt_status = !0;
-                // _drive_registers.interrupt_status = ~0U;
+                (*port_reg_ptr).interrupt_status = !0;
+                (*(*ahci.drive_registers.write())).interrupt_status = !0;
             }
         }
 
         Some(ahci)
+    }
+
+    // Issue an NCQ (Native Command Queueing) command to the disk
+    // Must preceed with clear_slot(slot) and push_buffer(slot).
+    // `fua`: If true, then don't acknowledge the write until data has been durably
+    // written to disk. `priority`: 0 is normal priority, 2 is high priority
+    fn issue_ncq(
+        &mut self,
+        slot: u32,
+        command: pci::ide_controller::Command,
+        sector: usize,
+        fua: bool,
+        priority: u32,
+    ) {
+        use pci::ide_controller::Command::*;
+
+        let nsectors = self.dma.ch[slot as usize].buffer_byte_pos / SECTOR_SIZE;
+        self.dma.ct[slot as usize].cfis[0] =
+            CFIS_COMMAND | ((command as u32) << 16) | ((nsectors & 0xFF) << 24);
+        self.dma.ct[slot as usize].cfis[1] =
+            (sector as u32 & 0xFFFFFF) | (u32::from(fua) << 31) | 0x40000000;
+        self.dma.ct[slot as usize].cfis[2] = ((sector >> 24) as u32) | ((nsectors & 0xFF00) << 16);
+        self.dma.ct[slot as usize].cfis[3] = (slot << 3) | (priority << 14);
+
+        self.dma.ch[slot as usize].flags = 4 /* # words in `cfis` */
+            | (CHFlag::Clear as u16)
+            | (if let WriteFPDMAQueued = command { CHFlag::Write as u16 } else { 0 });
+        self.dma.ch[slot as usize].buffer_byte_pos = 0;
+
+        // ensure all previous writes have made it out to memory
+        // IMPORTANT: Add this back in when we have multicore and have implemented
+        // atomic std::atomic_thread_fence(std::sync::atomic::Ordering::Release);
+
+        unsafe {
+            (*self.port_registers).ncq_active = 1 << slot; // tell interface NCQ slot used
+            (*self.port_registers).command_mask = 1 << slot; // tell interface command available
+        }
+        // The write to `command_mask` wakes up the device.
+
+        self.slots_outstanding_mask |= 1 << slot; // remember slot
+        self.num_slots_available -= 1;
     }
 
     fn push_buffer<'b, T: Sized>(&mut self, slot: u32, buf: &'b mut [T]) -> BufferHandle<'b, T> {
@@ -232,6 +283,35 @@ impl AHCIState {
         features: u32,
         count: u32,
     ) {
+        use pci::ide_controller::Command::*;
+
+        let mut num_sectors = self.dma.ch[slot as usize].buffer_byte_pos / SECTOR_SIZE;
+
+        if let SetFeatures = command {
+            if count != u32::MAX {
+                num_sectors = count;
+            }
+        }
+
+        self.dma.ct[slot as usize].cfis[0] =
+            CFIS_COMMAND | ((command as u32) << 16) | (features << 24);
+        self.dma.ct[slot as usize].cfis[1] = 0;
+        self.dma.ct[slot as usize].cfis[2] = ((features as u32) & 0xFF00) << 16;
+        self.dma.ct[slot as usize].cfis[3] = num_sectors;
+
+        self.dma.ch[slot as usize].flags = 4 | (CHFlag::Clear as u16);
+        self.dma.ch[slot as usize].buffer_byte_pos = 0;
+
+        // IMPORTANT: Uncomment once multicore and atomic are done
+        // std::atomic_thread_fence(std::memory_order_release);
+
+        unsafe {
+            // tell interface command is available
+            (*self.port_registers).command_mask = 1 << slot;
+        };
+
+        self.slots_outstanding_mask |= 1 << slot;
+        self.num_slots_available -= 1;
     }
 
     fn clear_slot<'b, T>(&mut self, handle: BufferHandle<'b, T>) {
@@ -255,7 +335,7 @@ impl AHCIState {
 
         if !self.slot_status[slot as usize].is_null() {
             unsafe { self.slot_status[slot as usize].write_volatile(result) };
-            self.slot_status[slot as usize] = core::ptr::null();
+            self.slot_status[slot as usize] = core::ptr::null_mut();
         }
     }
 }
@@ -269,4 +349,10 @@ struct BufferHandle<'a, T> {
 
 fn sstatus_active(sstatus: u32) -> bool {
     return (sstatus & 0x03) == 3 || ((1u32 << ((sstatus & 0xF00) >> 8)) & 0x144) != 0;
+}
+
+#[repr(u16)]
+enum CHFlag {
+    Clear = 0x400,
+    Write = 0x40,
 }

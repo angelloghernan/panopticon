@@ -155,6 +155,7 @@ enum Error {
     NoAddressMark = 0x01,
 }
 
+#[derive(Clone, Copy)]
 pub enum Command {
     ReadPIO = 0x20,
     ReadPIOExt = 0x24,
