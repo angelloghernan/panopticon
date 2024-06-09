@@ -2,11 +2,9 @@ use super::super::pci;
 use super::super::util;
 use super::super::x86_64;
 use super::{DMAState, PortCommandMasks, PortRegisters, Registers};
-use core::default::Default;
+use crate::klib::pci::pcistate::PCI_STATE;
 use core::marker::PhantomData;
 use core::ptr::{addr_of, addr_of_mut};
-use core::sync::atomic::AtomicU16;
-use core::sync::atomic::AtomicU32;
 use pci::pcistate::PCIState;
 use pci::Register;
 use spin::RwLock;
@@ -37,7 +35,7 @@ pub struct AHCIState {
     slots_outstanding_mask: u16,
 
     // This is modified by the hardware itself and our code. Shared across threads.
-    slot_status: [AtomicU32; 32],
+    slot_status: [*mut u32; 32],
     // TODO: Add buffer cache
 }
 
@@ -79,7 +77,7 @@ impl AHCIState {
             slots_outstanding_mask: 0,
             num_slots_available: 1,
             num_ncq_slots: 1,
-            slot_status: Default::default(),
+            slot_status: unsafe { core::mem::zeroed() },
         };
 
         let mut pci = PCIState::new();
@@ -152,14 +150,64 @@ impl AHCIState {
                 ahci.dma.ch[slot as usize].buffer_byte_pos = 0;
 
                 let handle = ahci.push_buffer(0, &mut id_buf);
+                ahci.issue_meta(0, pci::ide_controller::Command::Identify, 0, u32::MAX);
+                unsafe { ahci.await_basic(0) };
                 ahci.clear_slot(handle);
+
+                ahci.num_sectors = id_buf[100].read() as usize
+                    | ((id_buf[101].read() as usize) << 16)
+                    | ((id_buf[102].read() as usize) << 32)
+                    | ((id_buf[102].read() as usize) << 48);
+                {
+                    let drive_regs = *ahci.drive_registers.read();
+                    // slots per controller
+                    ahci.num_ncq_slots = ((*drive_regs).capabilities & 0x1F) + 1;
+                }
+
+                if (((id_buf[75].read() & 0x1F) + 1) as u32) < ahci.num_ncq_slots {
+                    // slots per disk
+                    ahci.num_ncq_slots = ((id_buf[75].read() & 0x1F) + 1) as u32;
+                }
+
+                ahci.slots_full_mask = if ahci.num_ncq_slots == 32 {
+                    u32::MAX
+                } else {
+                    (1u32 << ahci.num_ncq_slots) - 1
+                };
+
+                ahci.num_slots_available = ahci.num_ncq_slots as u16;
+
+                // set features
+                ahci.dma.ch[slot as usize].num_buffers = 0;
+                ahci.dma.ch[slot as usize].buffer_byte_pos = 0;
+                ahci.issue_meta(0, pci::ide_controller::Command::SetFeatures, 0x02, u32::MAX); // write cache enable
+                ahci.await_basic(0);
+
+                ahci.dma.ch[slot as usize].num_buffers = 0;
+                ahci.dma.ch[slot as usize].buffer_byte_pos = 0;
+                ahci.issue_meta(0, pci::ide_controller::Command::SetFeatures, 0xAA, u32::MAX); // read lookahead enable
+                ahci.await_basic(0);
+
+                // determine IRQ
+                let intr_line = PCI_STATE.lock().config_read_8(
+                    bus,
+                    slot,
+                    func_number,
+                    pci::Register::InterruptLine,
+                );
+
+                ahci.irq = intr_line as u32;
+
+                // finally, clear pending interrupts again
+                (*ahci.port_registers).interrupt_status = !0;
+                // _drive_registers.interrupt_status = ~0U;
             }
         }
 
         Some(ahci)
     }
 
-    fn push_buffer<'a, T: Sized>(&mut self, slot: u32, buf: &'a mut [T]) -> BufferHandle<'a, T> {
+    fn push_buffer<'b, T: Sized>(&mut self, slot: u32, buf: &'b mut [T]) -> BufferHandle<'b, T> {
         let phys_addr = util::kernel_to_physical_address(buf.as_mut_ptr() as u64);
 
         let num_buffers = self.dma.ch[slot as usize].num_buffers;
@@ -177,16 +225,38 @@ impl AHCIState {
         }
     }
 
-    /*
-    fn issue_meta(slot: u32,
-                  command: ,
-                  u32 const features, u32 const count) {
+    fn issue_meta(
+        &mut self,
+        slot: u32,
+        command: pci::ide_controller::Command,
+        features: u32,
+        count: u32,
+    ) {
     }
-    */
 
-    fn clear_slot<'a, T>(&mut self, handle: BufferHandle<'a, T>) {
+    fn clear_slot<'b, T>(&mut self, handle: BufferHandle<'b, T>) {
         self.dma.ch[handle.slot as usize].num_buffers = 0;
         self.dma.ch[handle.slot as usize].buffer_byte_pos = 0;
+    }
+
+    unsafe fn await_basic(&mut self, slot: u32) {
+        unsafe {
+            while (*self.port_registers).command_mask & (1u32 << slot) != 0 {
+                x86_64::pause();
+            }
+        }
+
+        unsafe { self.acknowledge(slot, 0) };
+    }
+
+    unsafe fn acknowledge(&mut self, slot: u32, result: u32) {
+        self.slots_outstanding_mask ^= 1u16 << slot;
+        self.num_slots_available += 1;
+
+        if !self.slot_status[slot as usize].is_null() {
+            unsafe { self.slot_status[slot as usize].write_volatile(result) };
+            self.slot_status[slot as usize] = core::ptr::null();
+        }
     }
 }
 

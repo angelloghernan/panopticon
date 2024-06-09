@@ -112,7 +112,6 @@ pub struct CommandHeader {
     num_buffers: u16,
     buffer_byte_pos: u32,
     command_table_address: u64,
-    // reserved_64: u32, // IMPORTANT: When porting, change above u32 to u64
     reserved: [u64; 2],
 }
 

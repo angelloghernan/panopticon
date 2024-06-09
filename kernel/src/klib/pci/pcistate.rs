@@ -1,5 +1,6 @@
 use super::Register;
 use crate::klib::pci::{CommandRegister, CONFIG_ADDRESS, CONFIG_DATA};
+use spin::mutex::Mutex;
 use x86_64::instructions::port::Port;
 use x86_64::structures::port::PortWrite;
 
@@ -8,6 +9,8 @@ const MAX_SLOTS: u32 = 32;
 const MAX_FUNCS: u32 = 8;
 
 pub struct PCIState {}
+
+pub static PCI_STATE: Mutex<PCIState> = Mutex::new(PCIState {});
 
 impl PCIState {
     pub fn new() -> Self {

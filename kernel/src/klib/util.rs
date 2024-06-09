@@ -22,13 +22,13 @@ impl<T: Clone + Copy> Volatile<T> {
     }
 
     #[inline]
-    fn read(&self) -> T {
+    pub fn read(&self) -> T {
         let ptr = &self.data as *const T;
         unsafe { core::ptr::read_volatile(ptr) }
     }
 
     #[inline]
-    fn write(&mut self, data: &T) {
+    pub fn write(&mut self, data: &T) {
         let ptr = &mut self.data as *mut T;
         unsafe { core::ptr::write_volatile(ptr, *data) }
     }

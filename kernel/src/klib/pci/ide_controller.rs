@@ -1,4 +1,5 @@
 use super::super::util::Volatile;
+use super::super::x86_64::{port_read_u8, port_write_u8};
 
 #[repr(C)]
 pub struct IDEController {
@@ -14,21 +15,85 @@ pub struct IDEController {
 }
 
 impl IDEController {
-    pub fn read(&self, channel: ChannelType, reg: Register) -> u8 {
-        0u8
+    pub fn read(&mut self, channel_type: ChannelType, reg: Register) -> u8 {
+        let u8_channel = channel_type as u8;
+
+        let channel = self.channel_registers[u8_channel as usize];
+
+        let reg_type = reg.to_register_type();
+
+        if let RegisterType::HighLevel = reg_type {
+            self.enable_hob(channel_type);
+        }
+
+        let u16_reg = reg as u16;
+
+        let result = unsafe {
+            match reg_type {
+                RegisterType::LowLevel => port_read_u8(channel.io_base + u16_reg),
+                RegisterType::HighLevel => port_read_u8(channel.io_base + u16_reg - 0x06),
+                RegisterType::DeviceControlOrStatus => {
+                    port_read_u8(channel.control + u16_reg - 0x0A)
+                }
+                RegisterType::BusMasterIDE => port_read_u8(channel.bus_master_ide + u16_reg - 0x0E),
+            }
+        };
+
+        if let RegisterType::HighLevel = reg_type {
+            self.disable_hob(channel_type);
+        }
+
+        result
     }
 
-    pub fn write(&mut self, channel: ChannelType, reg: Register, data: u8) {}
+    pub fn write(&mut self, channel_type: ChannelType, reg: Register, data: u8) {
+        let usize_channel = channel_type as usize;
+
+        let channel = self.channel_registers[usize_channel];
+
+        let reg_type = reg.to_register_type();
+
+        if let RegisterType::HighLevel = reg_type {
+            self.enable_hob(channel_type);
+        }
+
+        let u16_reg = reg as u16;
+
+        unsafe {
+            match reg_type {
+                RegisterType::LowLevel => port_write_u8(channel.io_base + u16_reg, data),
+                RegisterType::HighLevel => port_write_u8(channel.io_base + u16_reg - 0x06, data),
+                RegisterType::DeviceControlOrStatus => {
+                    port_write_u8(channel.control + u16_reg - 0x0A, data)
+                }
+                RegisterType::BusMasterIDE => {
+                    port_write_u8(channel.bus_master_ide + u16_reg - 0x0E, data)
+                }
+            }
+        };
+
+        if let RegisterType::HighLevel = reg_type {
+            self.disable_hob(channel_type);
+        }
+    }
 
     pub fn read_buffer(&mut self, channel: ChannelType, reg: Register, count: u32) {}
 
     pub fn read_drive_dma(channel: ChannelType) {}
 
-    pub fn enable_hob(channel_type: ChannelType) {}
+    pub fn enable_hob(&mut self, channel_type: ChannelType) {
+        let u8_channel = channel_type as u8;
+        let channel = self.channel_registers[u8_channel as usize];
+        let en_hob = ControlBits::HighOrderByte as u8 | channel.no_interrupts as u8;
 
-    pub fn disable_hob(channel_type: ChannelType) {}
+        self.write(channel_type, Register::Control, en_hob);
+    }
+
+    pub fn disable_hob(&mut self, channel_type: ChannelType) {}
 
     pub fn new(bar_4: u16) -> Self {
+        // safety: it doesn't even matter what values the IDE controller struct starts out with. i'm just
+        // doing this for convenience since MaybeUninit carries with it a lot more constraints
         let mut controller: IDEController = unsafe { core::mem::zeroed() };
         controller.channel_registers[0].io_base = 0x1F0;
         controller.channel_registers[0].control = 0x3F6;
@@ -90,7 +155,7 @@ enum Error {
     NoAddressMark = 0x01,
 }
 
-enum Command {
+pub enum Command {
     ReadPIO = 0x20,
     ReadPIOExt = 0x24,
     ReadDMA = 0xC8,
@@ -127,8 +192,8 @@ enum Register {
 }
 
 impl Register {
-    fn to_register_type(reg: Register) -> RegisterType {
-        let u8_reg = reg as u8;
+    pub fn to_register_type(&self) -> RegisterType {
+        let u8_reg = *self as u8;
 
         if u8_reg < 0x08 {
             RegisterType::LowLevel
@@ -163,6 +228,7 @@ enum ControlType {
     Slave = 0x1,
 }
 
+#[derive(Clone, Copy)]
 enum ChannelType {
     Primary = 0x0,
     Secondary = 0x1,
@@ -195,6 +261,7 @@ enum Mode {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 struct ChannelRegister {
     io_base: u16,
     control: u16,
