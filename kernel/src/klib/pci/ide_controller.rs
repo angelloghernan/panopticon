@@ -1,5 +1,8 @@
+use super::super::super::sleep;
 use super::super::util::Volatile;
 use super::super::x86_64::{port_read_u8, port_write_u8};
+use crate::print;
+use crate::println;
 
 #[repr(C)]
 pub struct IDEController {
@@ -107,13 +110,156 @@ impl IDEController {
 
         controller.write(ChannelType::Primary, Register::Control, disable_interrupt);
         controller.write(ChannelType::Secondary, Register::Control, disable_interrupt);
+        controller.detect_drives();
         controller
     }
 
-    pub fn detect_drives(&mut self) {}
+    pub fn detect_drives(&mut self) {
+        let mut count = 0;
+        for i in 0..2 {
+            for j in 0..2 {
+                self.devices[count].reserved = false;
+
+                let select_master = 0xA0 | (j << 4);
+
+                let channel = if i == 0 {
+                    ChannelType::Primary
+                } else {
+                    ChannelType::Secondary
+                };
+                let control_type = if j == 0 {
+                    ControlType::Master
+                } else {
+                    ControlType::Slave
+                };
+
+                self.write(channel, Register::HDDevSel, select_master);
+
+                sleep(1);
+
+                self.write(channel, Register::CommandOrStatus, Command::Identify as u8);
+
+                sleep(1);
+                let drive = if i == 0 {
+                    "Master drive"
+                } else {
+                    "Slave drive"
+                };
+                let channel_type = if j == 0 { "primary" } else { "secondary" };
+
+                if self.read(channel, Register::CommandOrStatus) == 0 {
+                    println!("{} {} channel is inactive", drive, channel_type);
+                    continue;
+                }
+
+                let mut had_error = false;
+
+                loop {
+                    let status = self.read(channel, Register::CommandOrStatus);
+                    if status & Status::Error as u8 != 0 {
+                        println!("Drive {} {} had an error", i, j);
+                        had_error = true;
+                        break;
+                    }
+
+                    let busy = status & Status::Busy as u8;
+                    let ready = status & Status::DataRequestReady as u8;
+
+                    if busy == 0 && ready != 0 {
+                        break;
+                    }
+                }
+
+                let mut if_type = InterfaceType::ATA;
+
+                println!("DRIVE REPORT: {} {}", drive, channel_type);
+
+                if !had_error {
+                    let c_lower = self.read(channel, Register::LBA1);
+                    let c_higher = self.read(channel, Register::LBA2);
+                    print!("Interface type: ");
+
+                    if (c_lower == 0x69 && c_higher == 0x96) || c_lower == 0x14 {
+                        if_type = InterfaceType::ATAPI;
+                        println!("ATAPI");
+                    } else {
+                        println!(
+                            "Unknown. LBA1/2 is {:?} and {:?}. Assuming ATA.",
+                            c_lower as *const (), c_higher as *const ()
+                        );
+                    }
+
+                    self.write(
+                        channel,
+                        Register::CommandOrStatus,
+                        Command::IdentifyPacket as u8,
+                    );
+                    sleep(1);
+                }
+
+                self.read_buffer(channel, Register::Data, 256);
+
+                let buf_ptr = self.buffer.as_ptr();
+
+                self.devices[count].reserved = true;
+                self.devices[count].interface_type = if_type;
+                self.devices[count].channel_type = channel;
+                self.devices[count].control_type = control_type;
+                self.devices[count].drive_signature =
+                    unsafe { *(buf_ptr.add(IdentityField::DeviceType as usize) as *const u16) };
+                self.devices[count].capabilities =
+                    unsafe { *(buf_ptr.add(IdentityField::Capabilities as usize) as *const u16) };
+                self.devices[count].command_sets =
+                    unsafe { *(buf_ptr.add(IdentityField::CommandSets as usize) as *const u32) };
+
+                print!("Addressing scheme: ");
+
+                if self.devices[count].command_sets & (1 << 26) != 0 {
+                    println!("48-bit");
+                    self.devices[count].size =
+                        unsafe { *(buf_ptr.add(IdentityField::MaxLBAExt as usize) as *const u32) };
+                } else {
+                    println!("32-bit");
+                    self.devices[count].size =
+                        unsafe { *(buf_ptr.add(IdentityField::MaxLBA as usize) as *const u32) };
+                }
+
+                print!("Name: ");
+
+                for k in (0..40).step_by(2) {
+                    self.devices[count].model[k] =
+                        self.buffer[IdentityField::Model as usize + k + 1];
+                    self.devices[count].model[k + 1] =
+                        self.buffer[IdentityField::Model as usize + k];
+
+                    if self.devices[count].model[k] == 0 {
+                        break;
+                    }
+                    print!("{}", self.devices[count].model[k] as char);
+
+                    if self.devices[count].model[k + 1] == 0 {
+                        break;
+                    }
+                    print!("{}", self.devices[count].model[k + 1] as char);
+                }
+
+                println!();
+                self.devices[count].model[40] = 0;
+                println!(
+                    "Size: {} total sectors, or {} MB",
+                    self.devices[count].size,
+                    self.devices[count].size * 512 / (1024 * 1024)
+                );
+
+                println!();
+
+                count += 1;
+            }
+        }
+    }
 }
 
-enum RegisterType {
+pub enum RegisterType {
     HighLevel,
     LowLevel,
     DeviceControlOrStatus,
@@ -175,7 +321,8 @@ pub enum Command {
     SetFeatures = 0xEF,
 }
 
-enum Register {
+#[derive(Clone, Copy)]
+pub enum Register {
     Data = 0x00,
     ErrorOrFeatures = 0x01,
     SecCount0 = 0x02,
@@ -230,7 +377,7 @@ enum ControlType {
 }
 
 #[derive(Clone, Copy)]
-enum ChannelType {
+pub enum ChannelType {
     Primary = 0x0,
     Secondary = 0x1,
 }

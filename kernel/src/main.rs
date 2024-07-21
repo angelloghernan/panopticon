@@ -1,6 +1,5 @@
 #![no_std]
 #![no_main]
-#![feature(rustc_attrs)]
 #![feature(const_mut_refs)]
 #![feature(abi_x86_interrupt)]
 #![feature(maybe_uninit_uninit_array)]
@@ -10,11 +9,12 @@
 mod allocator;
 mod klib;
 mod memory;
+use crate::klib::ahci::ahcistate::AHCIState;
 use crate::klib::ps2;
 use crate::memory::init_page_table;
 use crate::memory::BootInfoFrameAllocator;
 use bootloader_api::config::{BootloaderConfig, Mapping};
-use bootloader_api::{entry_point, info::FrameBuffer, BootInfo};
+use bootloader_api::{entry_point, BootInfo};
 use idt::StackFrame;
 use klib::acpi::rsdp::Rsdp;
 use klib::graphics::framebuffer;
@@ -32,11 +32,10 @@ use x86_64::structures::paging::Mapper;
 use x86_64::structures::paging::Page;
 use x86_64::structures::paging::PageTableFlags;
 use x86_64::structures::paging::Size4KiB;
-use x86_64::structures::paging::Translate;
 use x86_64::VirtAddr;
 
 extern crate alloc;
-use alloc::boxed::Box;
+use core::sync::atomic::AtomicU64;
 
 lazy_static! {
     static ref IDT: idt::DescriptorTable = {
@@ -48,6 +47,8 @@ lazy_static! {
         idt
     };
 }
+
+static TIMER: AtomicU64 = AtomicU64::new(0);
 
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     init(boot_info);
@@ -141,6 +142,14 @@ fn init(boot_info: &'static mut BootInfo) {
 
     let rsdp = unsafe { Rsdp::get(rsdp_addr as usize) };
     println!("Rsdp validation returns {}", rsdp.validate_checksum());
+
+    let frame = frame_allocator
+        .allocate_frame()
+        .expect("Failed to allocate frame for AHCI");
+    println!("Attempting to get ahci state");
+    unsafe {
+        AHCIState::new(&mut mapper, frame, &mut frame_allocator, 0, 0, 0);
+    }
 }
 
 use core::panic::PanicInfo;
@@ -170,7 +179,19 @@ extern "x86-interrupt" fn keyboard_handler(_stack_frame: StackFrame) {
 }
 
 extern "x86-interrupt" fn timer_handler(_stack_frame: StackFrame) {
+    use core::sync::atomic::Ordering::*;
+    let time = TIMER.load(SeqCst);
+    let _ = TIMER.compare_exchange_weak(time, time + 1, SeqCst, SeqCst);
     unsafe { PIC.lock().end_of_interrupt(Irq::Timer as u8) }
+}
+
+fn sleep(milliseconds: u64) {
+    use core::sync::atomic::Ordering::*;
+    let time = TIMER.load(SeqCst);
+    while TIMER.load(SeqCst) < time + milliseconds {
+        // TODO: Do something else instead of just waiting; do other scheduled tasks.
+        unsafe { klib::x86_64::io_wait() };
+    }
 }
 
 extern "x86-interrupt" fn double_fault_handler(stack_frame: StackFrame, error_code: u64) -> ! {

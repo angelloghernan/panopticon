@@ -50,7 +50,7 @@ pub struct Registers {
     pub cap2: u32,               // CAP2: HBA Capabilities extended
     pub bohc: u32,               // BOHC: BIOS/OS Handoff Control and Status
     pub reserved: [u32; 53],     // Vendor specific registers
-    pub port_regs: [PortRegisters; 32],
+                                 // pub port_regs: [PortRegisters; 32],
 }
 
 #[repr(u32)]

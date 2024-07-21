@@ -105,7 +105,7 @@ impl PCIState {
         mut bus: u32,
         mut slot: u32,
         mut func: u32,
-    ) -> (u32, u32, u32) {
+    ) -> Option<(u32, u32, u32)> {
         let lthbc = self.config_read_32(bus, slot, func, Register::CacheLineSize);
 
         loop {
@@ -124,13 +124,13 @@ impl PCIState {
             }
 
             if bus >= MAX_BUSES {
-                return (bus, slot, func);
+                return None;
             }
 
             let lthbc = self.config_read_32(bus, slot, func, Register::CacheLineSize);
 
             if lthbc != 0xFF {
-                return (bus, slot, func);
+                return Some((bus, slot, func));
             }
         }
     }

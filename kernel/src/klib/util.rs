@@ -10,6 +10,11 @@ pub fn kernel_to_physical_address(addr: u64) -> u64 {
     addr
 }
 
+#[inline]
+pub fn physical_to_kernel_address(addr: u64) -> u64 {
+    addr
+}
+
 #[derive(Clone, Copy)]
 pub struct Volatile<T: Clone + Copy> {
     data: T,

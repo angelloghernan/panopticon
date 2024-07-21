@@ -1,19 +1,33 @@
 use super::super::pci;
 use super::super::util;
-use super::super::x86_64;
 use super::{DMAState, PortCommandMasks, PortRegisters, Registers};
+use crate::klib::ahci::GHCMasks;
 use crate::klib::pci::pcistate::PCI_STATE;
+use crate::klib::x86_64::pause;
+use crate::BootInfoFrameAllocator;
+use alloc::boxed::Box;
+use core::cell::OnceCell;
 use core::marker::PhantomData;
-use core::ptr::{addr_of, addr_of_mut};
+use core::ptr::addr_of;
 use pci::pcistate::PCIState;
 use pci::Register;
 use spin::RwLock;
 use util::Volatile;
+use x86_64::structures::paging::Mapper;
+use x86_64::structures::paging::OffsetPageTable;
+use x86_64::structures::paging::Page;
+use x86_64::structures::paging::PageTableFlags;
+use x86_64::structures::paging::PhysFrame;
+use x86_64::structures::paging::Size4KiB;
+use x86_64::VirtAddr;
 
 // TODO: change to dynamic var in ahci state, this is not true for all drives
 const SECTOR_SIZE: u32 = 512;
 
 const CFIS_COMMAND: u32 = 0x8027;
+
+const DRIVE_REGISTER: OnceCell<RwLock<&'static mut Registers>> = OnceCell::new();
+static mut DRIVE_REGISTERS: [OnceCell<RwLock<&'static mut Registers>>; 5] = [DRIVE_REGISTER; 5];
 
 #[repr(C)]
 pub struct AHCIState {
@@ -22,12 +36,11 @@ pub struct AHCIState {
     slot: u32,
     func: u32,
     sata_port: u32,
-    // These are pointers because the port registers technically alias the drive registers.
-    // Other drive register fields are shared by all devices, so it needs a lock.
-    drive_registers: &'static RwLock<*mut Registers>,
+    // Drive register fields are shared by all devices, so it needs a lock.
+    drive_registers: &'static RwLock<&'static mut Registers>,
 
     // Port registers are per-drive; other devices should not access.
-    port_registers: *mut PortRegisters,
+    port_registers: &'static mut PortRegisters,
 
     // These should remain constant after loading
     irq: u32,
@@ -55,20 +68,28 @@ impl AHCIState {
     ///
     /// ### Safety
     /// This should be called only ONCE per drive. Each drive on the AHCI controller has a unique sata port number.
-    /// Also, the `regs` argument should ultimately point to a valid register memory.
+    /// Also, the `regs` argument should ultimately point to valid register memory.
     unsafe fn init(
         bus: u32,
         slot: u32,
         func_number: u32,
         sata_port: u32,
-        regs: &'static RwLock<*mut Registers>,
-    ) -> Option<Self> {
+        regs: &'static RwLock<&'static mut Registers>,
+    ) -> Self {
         use PortCommandMasks::*;
 
         let dma: DMAState = unsafe { core::mem::zeroed() };
         let port_reg_ptr = {
-            let regs_ptr = *regs.write();
-            addr_of_mut!((*regs_ptr).port_regs[sata_port as usize])
+            let regs_ptr = *regs.read() as *const Registers as *const u8;
+            // Index into the array of port registers, located past the drive registers.
+            // This doesn't overlap with the drive registers, so this is OK to do,
+            // *assuming we have not called with the same sata port before*, as specified
+            // in the invariants above.
+            let port_reg_ptr = regs_ptr
+                .add(core::mem::size_of::<Registers>())
+                .add(core::mem::size_of::<PortRegisters>() * sata_port as usize)
+                as *mut PortRegisters;
+            &mut (*port_reg_ptr)
         };
 
         let mut ahci = AHCIState {
@@ -95,13 +116,11 @@ impl AHCIState {
         {
             let running_mask = (CommandRunning as u32) | (RFISRunning as u32);
 
-            unsafe {
-                (*port_reg_ptr).command_and_status &= mask;
-                while (*port_reg_ptr).command_and_status & running_mask != 0 {
-                    // TODO: Maybe change this to use a wait queue?
-                    x86_64::pause();
-                }
-            };
+            ahci.port_registers.command_and_status &= mask;
+            while ahci.port_registers.command_and_status & running_mask != 0 {
+                // TODO: Maybe change this to use a wait queue?
+                pause();
+            }
 
             for ch in ahci.dma.ch.iter_mut() {
                 ch.command_table_address =
@@ -115,44 +134,47 @@ impl AHCIState {
                 use super::PortCommandMasks::*;
                 use super::RStatusMasks::*;
 
-                (*port_reg_ptr).cmdlist_addr =
+                ahci.port_registers.cmdlist_addr =
                     util::kernel_to_physical_address(addr_of!(ahci.dma.ch[0]) as u64);
-                (*port_reg_ptr).rfis_base_addr =
+                ahci.port_registers.rfis_base_addr =
                     util::kernel_to_physical_address(addr_of!(ahci.dma.rfis) as u64);
 
-                (*port_reg_ptr).serror = !0;
-                (*port_reg_ptr).command_mask = (*port_reg_ptr).command_mask | (PowerUp as u32);
+                ahci.port_registers.serror = !0;
+                ahci.port_registers.command_mask =
+                    ahci.port_registers.command_mask | (PowerUp as u32);
 
-                (*port_reg_ptr).interrupt_status = !0;
+                ahci.port_registers.interrupt_status = !0;
 
                 {
-                    let regs_ptr = *ahci.drive_registers.write();
+                    let mut regs_ptr = ahci.drive_registers.write();
                     (*regs_ptr).interrupt_status = !0; // TODO change this? want to change only
                                                        // this port, i think, if that's how it
                                                        // works
                 }
 
-                (*port_reg_ptr).interrupt_enable =
+                ahci.port_registers.interrupt_enable =
                     DeviceToHost as u32 | NCQComplete as u32 | ErrorMask as u32;
 
                 let busy = Busy as u32 | DataReq as u32;
 
-                while (*port_reg_ptr).tfd & busy != 0 || !sstatus_active((*port_reg_ptr).sstatus) {
-                    x86_64::pause();
+                while ahci.port_registers.tfd & busy != 0
+                    || !sstatus_active(ahci.port_registers.sstatus)
+                {
+                    pause();
                 }
 
-                (*port_reg_ptr).command_and_status = ((*port_reg_ptr).command_and_status
+                ahci.port_registers.command_and_status = (ahci.port_registers.command_and_status
                     & !(InterfaceMask as u32))
                     | InterfaceActive as u32;
 
-                while (*port_reg_ptr).command_and_status & InterfaceMask as u32
+                while ahci.port_registers.command_and_status & InterfaceMask as u32
                     != InterfaceIdle as u32
                 {
-                    x86_64::pause();
+                    pause();
                 }
 
-                (*port_reg_ptr).command_and_status =
-                    (*port_reg_ptr).command_and_status | Start as u32;
+                ahci.port_registers.command_and_status =
+                    ahci.port_registers.command_and_status | Start as u32;
 
                 let mut id_buf: [Volatile<u16>; 256] = core::mem::zeroed();
 
@@ -169,7 +191,7 @@ impl AHCIState {
                     | ((id_buf[102].read() as usize) << 32)
                     | ((id_buf[102].read() as usize) << 48);
                 {
-                    let drive_regs = *ahci.drive_registers.read();
+                    let drive_regs = ahci.drive_registers.read();
                     // slots per controller
                     ahci.num_ncq_slots = ((*drive_regs).capabilities & 0x1F) + 1;
                 }
@@ -209,12 +231,86 @@ impl AHCIState {
                 ahci.irq = intr_line as u32;
 
                 // finally, clear pending interrupts again
-                (*port_reg_ptr).interrupt_status = !0;
+                ahci.port_registers.interrupt_status = !0;
                 (*(*ahci.drive_registers.write())).interrupt_status = !0;
             }
         }
 
-        Some(ahci)
+        ahci
+    }
+
+    pub unsafe fn new(
+        mapper: &mut OffsetPageTable<'_>,
+        frame: PhysFrame,
+        frame_allocator: &mut BootInfoFrameAllocator,
+        bus: u32,
+        slot: u32,
+        func: u32,
+    ) -> Option<&'static Self> {
+        let mut pci = PCIState::new();
+        let mut addr_opt = Some((bus, slot, func));
+        while let Some((bus, slot, func)) = addr_opt {
+            let subclass = pci.config_read_16(bus, slot, func, pci::Register::Subclass);
+            if subclass != 0x0106 {
+                addr_opt = unsafe { pci.next_addr(bus, slot, func) };
+                continue;
+            }
+
+            let phys_addr =
+                pci.config_read_32(bus, slot, func, pci::Register::GDBaseAddress5) as u64;
+
+            if phys_addr == 0 {
+                addr_opt = pci.next_addr(bus, slot, func);
+                continue;
+            }
+
+            let regs_page: Page<Size4KiB> = Page::containing_address(VirtAddr::new(phys_addr));
+            let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+            unsafe {
+                mapper
+                    .map_to(regs_page, frame, flags, frame_allocator)
+                    .expect("Failed to map AHCI address in pagetable!")
+                    .flush()
+            };
+
+            // FIXME: This isn't quite ready for multi-drive support. Needs to *ensure* that the
+            // same slot is not used twice.
+            let drive_regs_ptr = util::physical_to_kernel_address(phys_addr) as *mut Registers;
+            for maybe_lock in DRIVE_REGISTERS.iter() {
+                match (*maybe_lock).set(RwLock::new(&mut *drive_regs_ptr)) {
+                    Err(_) => {
+                        // This slot has been claimed.
+                    }
+                    Ok(()) => {
+                        // Safe to use; no other thread has claimed this drive*
+                        // *not actually verified yet by code; keep in mind
+                        (*drive_regs_ptr).global_hba_control = GHCMasks::AHCIEnable as u32;
+
+                        let port_reg_ptr = (drive_regs_ptr as *mut u8)
+                            .add(core::mem::size_of::<Registers>())
+                            .add(core::mem::size_of::<PortRegisters>() * slot as usize)
+                            as *mut PortRegisters;
+
+                        for slot in slot..32 {
+                            if (*drive_regs_ptr).port_mask & (1u32 << slot) != 0
+                                && (*port_reg_ptr).sstatus != 0
+                            {
+                                let _ =
+                                    unsafe { (*maybe_lock).set(RwLock::new(&mut *drive_regs_ptr)) };
+                                let lock_ref = (*maybe_lock).get().unwrap();
+                                let ahci_state = unsafe {
+                                    Box::new(AHCIState::init(bus, slot, func, slot, lock_ref))
+                                };
+                                return Some(Box::<AHCIState>::leak(ahci_state));
+                            }
+                        }
+                    }
+                }
+            }
+            return None;
+        }
+
+        None
     }
 
     // Issue an NCQ (Native Command Queueing) command to the disk
@@ -276,6 +372,29 @@ impl AHCIState {
         }
     }
 
+    fn handle_interrupt(&mut self) {
+        unsafe {
+            // use super::RStatusMasks;
+            // let is_error = ((*self.port_registers).interrupt_status
+            //     & InterruptMasks::FatalErrorMask as u32
+            //     != 0)
+            //     || ((*self.port_registers).tfd & RStatusMasks::Error as u32 != 0);
+            let mut drive_registers = self.drive_registers.write();
+            (*self.port_registers).interrupt_status = !0;
+            (*drive_registers).interrupt_status = !0;
+            let mut acks =
+                self.slots_outstanding_mask & !((*self.port_registers).ncq_active as u16);
+            let mut slot = 0;
+            while acks != 0 {
+                if acks & 1 != 0 {
+                    self.acknowledge(slot, 0);
+                }
+                acks >>= 1;
+                slot += 1;
+            }
+        }
+    }
+
     fn issue_meta(
         &mut self,
         slot: u32,
@@ -322,7 +441,7 @@ impl AHCIState {
     unsafe fn await_basic(&mut self, slot: u32) {
         unsafe {
             while (*self.port_registers).command_mask & (1u32 << slot) != 0 {
-                x86_64::pause();
+                pause();
             }
         }
 
@@ -355,4 +474,12 @@ fn sstatus_active(sstatus: u32) -> bool {
 enum CHFlag {
     Clear = 0x400,
     Write = 0x40,
+}
+
+#[repr(u32)]
+enum InterruptMasks {
+    DeviceToHost = 0x1,
+    NCQComplete = 0x8,
+    ErrorMask = 0x7D800010,
+    FatalErrorMask = 0x78000000, // HBFS|HBDS|IFS|TFES
 }
