@@ -4,6 +4,7 @@ use super::{DMAState, PortCommandMasks, PortRegisters, Registers};
 use crate::klib::ahci::GHCMasks;
 use crate::klib::pci::pcistate::PCI_STATE;
 use crate::klib::x86_64::pause;
+use crate::println;
 use crate::BootInfoFrameAllocator;
 use alloc::boxed::Box;
 use core::cell::OnceCell;
@@ -13,11 +14,11 @@ use pci::pcistate::PCIState;
 use pci::Register;
 use spin::RwLock;
 use util::Volatile;
+use x86_64::structures::paging::FrameAllocator;
 use x86_64::structures::paging::Mapper;
 use x86_64::structures::paging::OffsetPageTable;
 use x86_64::structures::paging::Page;
 use x86_64::structures::paging::PageTableFlags;
-use x86_64::structures::paging::PhysFrame;
 use x86_64::structures::paging::Size4KiB;
 use x86_64::VirtAddr;
 
@@ -77,6 +78,8 @@ impl AHCIState {
         regs: &'static RwLock<&'static mut Registers>,
     ) -> Self {
         use PortCommandMasks::*;
+
+        println!("going to init");
 
         let dma: DMAState = unsafe { core::mem::zeroed() };
         let port_reg_ptr = {
@@ -241,7 +244,6 @@ impl AHCIState {
 
     pub unsafe fn new(
         mapper: &mut OffsetPageTable<'_>,
-        frame: PhysFrame,
         frame_allocator: &mut BootInfoFrameAllocator,
         bus: u32,
         slot: u32,
@@ -249,10 +251,12 @@ impl AHCIState {
     ) -> Option<&'static Self> {
         let mut pci = PCIState::new();
         let mut addr_opt = Some((bus, slot, func));
+
         while let Some((bus, slot, func)) = addr_opt {
+            // println!("Looping: {bus}, {slot}, {func}");
             let subclass = pci.config_read_16(bus, slot, func, pci::Register::Subclass);
             if subclass != 0x0106 {
-                addr_opt = unsafe { pci.next_addr(bus, slot, func) };
+                addr_opt = pci.next_addr(bus, slot, func);
                 continue;
             }
 
@@ -263,6 +267,12 @@ impl AHCIState {
                 addr_opt = pci.next_addr(bus, slot, func);
                 continue;
             }
+
+            println!("going through: {bus}, {slot}, {func}");
+
+            let frame = frame_allocator
+                .allocate_frame()
+                .expect("Failed to allocate frame for AHCI");
 
             let regs_page: Page<Size4KiB> = Page::containing_address(VirtAddr::new(phys_addr));
             let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
@@ -276,25 +286,32 @@ impl AHCIState {
             // FIXME: This isn't quite ready for multi-drive support. Needs to *ensure* that the
             // same slot is not used twice.
             let drive_regs_ptr = util::physical_to_kernel_address(phys_addr) as *mut Registers;
-            for maybe_lock in DRIVE_REGISTERS.iter() {
-                match (*maybe_lock).set(RwLock::new(&mut *drive_regs_ptr)) {
-                    Err(_) => {
-                        // This slot has been claimed.
-                    }
-                    Ok(()) => {
-                        // Safe to use; no other thread has claimed this drive*
-                        // *not actually verified yet by code; keep in mind
-                        (*drive_regs_ptr).global_hba_control = GHCMasks::AHCIEnable as u32;
+            if (*drive_regs_ptr).global_hba_control & GHCMasks::AHCIEnable as u32 == 0 {
+                (*drive_regs_ptr).global_hba_control = GHCMasks::AHCIEnable as u32;
+            }
 
-                        let port_reg_ptr = (drive_regs_ptr as *mut u8)
-                            .add(core::mem::size_of::<Registers>())
-                            .add(core::mem::size_of::<PortRegisters>() * slot as usize)
-                            as *mut PortRegisters;
+            println!("Drive regs ptr: {:#x}", drive_regs_ptr as u64);
+            println!("Capabilites: {}", (*drive_regs_ptr).capabilities);
+            println!(
+                "global_hba_control: {}",
+                (*drive_regs_ptr).global_hba_control
+            );
 
-                        for slot in slot..32 {
-                            if (*drive_regs_ptr).port_mask & (1u32 << slot) != 0
-                                && (*port_reg_ptr).sstatus != 0
-                            {
+            for slot in 0..32 {
+                let port_reg_ptr = (drive_regs_ptr as *mut u8)
+                    .add(core::mem::size_of::<Registers>())
+                    .add(core::mem::size_of::<PortRegisters>() * slot as usize)
+                    as *mut PortRegisters;
+                if ((*drive_regs_ptr).port_mask & (1u32 << slot)) != 0
+                    && (*port_reg_ptr).sstatus != 0
+                {
+                    for maybe_lock in DRIVE_REGISTERS.iter() {
+                        match (*maybe_lock).set(RwLock::new(&mut *drive_regs_ptr)) {
+                            Err(_) => {
+                                // This slot has been claimed.
+                            }
+                            Ok(()) => {
+                                println!("Found one");
                                 let _ =
                                     unsafe { (*maybe_lock).set(RwLock::new(&mut *drive_regs_ptr)) };
                                 let lock_ref = (*maybe_lock).get().unwrap();
@@ -307,7 +324,8 @@ impl AHCIState {
                     }
                 }
             }
-            return None;
+            println!("Next one");
+            addr_opt = pci.next_addr(bus, slot, func);
         }
 
         None

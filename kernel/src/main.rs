@@ -10,6 +10,7 @@ mod allocator;
 mod klib;
 mod memory;
 use crate::klib::ahci::ahcistate::AHCIState;
+use crate::klib::pci::ide_controller::IDEController;
 use crate::klib::ps2;
 use crate::memory::init_page_table;
 use crate::memory::BootInfoFrameAllocator;
@@ -140,15 +141,13 @@ fn init(boot_info: &'static mut BootInfo) {
 
     println!("Rsdp addr is {:x}", rsdp_addr);
 
+    // let ide_controller = IDEController::new();
+
     let rsdp = unsafe { Rsdp::get(rsdp_addr as usize) };
     println!("Rsdp validation returns {}", rsdp.validate_checksum());
-
-    let frame = frame_allocator
-        .allocate_frame()
-        .expect("Failed to allocate frame for AHCI");
     println!("Attempting to get ahci state");
     unsafe {
-        AHCIState::new(&mut mapper, frame, &mut frame_allocator, 0, 0, 0);
+        AHCIState::new(&mut mapper, &mut frame_allocator, 0, 0, 0);
     }
 }
 

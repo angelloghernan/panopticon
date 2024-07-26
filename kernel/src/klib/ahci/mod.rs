@@ -37,6 +37,7 @@ pub struct PortRegisters {
     pub vendor_specific: [u32; 14], // PxVS -- Port x Vendor Specific (ignore)
 }
 
+#[repr(C)]
 pub struct Registers {
     pub capabilities: u32,       // CAP: HBA capabilities [R]
     pub global_hba_control: u32, // GHC: global HBA control [R/W]
