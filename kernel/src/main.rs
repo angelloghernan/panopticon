@@ -146,9 +146,12 @@ fn init(boot_info: &'static mut BootInfo) {
     let rsdp = unsafe { Rsdp::get(rsdp_addr as usize) };
     println!("Rsdp validation returns {}", rsdp.validate_checksum());
     println!("Attempting to get ahci state");
-    unsafe {
-        AHCIState::new(&mut mapper, &mut frame_allocator, 0, 0, 0);
-    }
+    let maybe_ahci = unsafe { AHCIState::new(&mut mapper, &mut frame_allocator, 0, 0, 0) };
+
+    match maybe_ahci {
+        Some(_) => println!("AHCI found"),
+        None => println!("AHCI not found :("),
+    };
 }
 
 use core::panic::PanicInfo;

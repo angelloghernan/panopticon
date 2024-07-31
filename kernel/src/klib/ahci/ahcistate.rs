@@ -19,7 +19,10 @@ use x86_64::structures::paging::Mapper;
 use x86_64::structures::paging::OffsetPageTable;
 use x86_64::structures::paging::Page;
 use x86_64::structures::paging::PageTableFlags;
+use x86_64::structures::paging::PhysFrame;
 use x86_64::structures::paging::Size4KiB;
+use x86_64::structures::paging::Translate;
+use x86_64::PhysAddr;
 use x86_64::VirtAddr;
 
 // TODO: change to dynamic var in ahci state, this is not true for all drives
@@ -270,11 +273,13 @@ impl AHCIState {
 
             println!("going through: {bus}, {slot}, {func}");
 
-            let frame = frame_allocator
-                .allocate_frame()
-                .expect("Failed to allocate frame for AHCI");
+            /*let frame = frame_allocator
+            .allocate_frame()
+            .expect("Failed to allocate frame for AHCI");*/
 
             let regs_page: Page<Size4KiB> = Page::containing_address(VirtAddr::new(phys_addr));
+            let frame = PhysFrame::containing_address(PhysAddr::new(phys_addr));
+
             let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
             unsafe {
                 mapper
@@ -286,24 +291,28 @@ impl AHCIState {
             // FIXME: This isn't quite ready for multi-drive support. Needs to *ensure* that the
             // same slot is not used twice.
             let drive_regs_ptr = util::physical_to_kernel_address(phys_addr) as *mut Registers;
-            if (*drive_regs_ptr).global_hba_control & GHCMasks::AHCIEnable as u32 == 0 {
+            if (drive_regs_ptr.read_volatile()).global_hba_control & GHCMasks::AHCIEnable as u32
+                == 0
+            {
                 (*drive_regs_ptr).global_hba_control = GHCMasks::AHCIEnable as u32;
             }
 
             println!("Drive regs ptr: {:#x}", drive_regs_ptr as u64);
-            println!("Capabilites: {}", (*drive_regs_ptr).capabilities);
+            println!("Capabilites: {:#x}", (*drive_regs_ptr).capabilities);
             println!(
                 "global_hba_control: {}",
                 (*drive_regs_ptr).global_hba_control
             );
 
-            for slot in 0..32 {
+            println!("Port mask: {}", (drive_regs_ptr.read_volatile()).port_mask);
+
+            for fslot in 0..32 {
                 let port_reg_ptr = (drive_regs_ptr as *mut u8)
                     .add(core::mem::size_of::<Registers>())
-                    .add(core::mem::size_of::<PortRegisters>() * slot as usize)
+                    .add(core::mem::size_of::<PortRegisters>() * fslot as usize)
                     as *mut PortRegisters;
-                if ((*drive_regs_ptr).port_mask & (1u32 << slot)) != 0
-                    && (*port_reg_ptr).sstatus != 0
+                if ((drive_regs_ptr.read_volatile()).port_mask & (1u32 << slot)) != 0
+                    && (port_reg_ptr.read_volatile()).sstatus != 0
                 {
                     for maybe_lock in DRIVE_REGISTERS.iter() {
                         match (*maybe_lock).set(RwLock::new(&mut *drive_regs_ptr)) {
@@ -316,7 +325,7 @@ impl AHCIState {
                                     unsafe { (*maybe_lock).set(RwLock::new(&mut *drive_regs_ptr)) };
                                 let lock_ref = (*maybe_lock).get().unwrap();
                                 let ahci_state = unsafe {
-                                    Box::new(AHCIState::init(bus, slot, func, slot, lock_ref))
+                                    Box::new(AHCIState::init(bus, fslot, func, fslot, lock_ref))
                                 };
                                 return Some(Box::<AHCIState>::leak(ahci_state));
                             }

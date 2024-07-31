@@ -1,3 +1,5 @@
+use std::ffi::OsStr;
+
 fn main() {
     // read env variables that were set in build script
     // let uefi_path = env!("UEFI_PATH");
@@ -13,7 +15,7 @@ fn main() {
     // } else {
     cmd.arg("-device").arg("piix4-ide,bus=pci.0,id=piix4-ide");
     cmd.arg("-drive")
-        .arg(format!("format=raw,file={bios_path},if=none,id=bootdisk"));
+        .arg(format!("file={bios_path},if=none,format=raw,id=bootdisk"));
     cmd.arg("-device")
         .arg("ide-hd,drive=bootdisk,bus=piix4-ide.0");
     cmd.arg("-drive")
@@ -27,6 +29,10 @@ fn main() {
     // -device ahci,id=ahci \
     // -device ide-hd,drive=maindisk,bus=ahci.0
     // }
+    let args: Vec<&OsStr> = cmd.get_args().collect();
+    println!("running command qemu-system-x86_64 with args");
+    args.iter()
+        .for_each(|arg| println!("{}", arg.to_str().unwrap()));
     let mut child = cmd.spawn().unwrap();
     child.wait().unwrap();
 }
