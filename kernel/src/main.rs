@@ -10,6 +10,7 @@ mod allocator;
 mod klib;
 mod memory;
 use crate::klib::ahci::ahcistate::AHCIState;
+use crate::klib::ahci::ahcistate::SATA_DISK0;
 use crate::klib::pci::ide_controller::IDEController;
 use crate::klib::ps2;
 use crate::memory::init_page_table;
@@ -146,12 +147,9 @@ fn init(boot_info: &'static mut BootInfo) {
     let rsdp = unsafe { Rsdp::get(rsdp_addr as usize) };
     println!("Rsdp validation returns {}", rsdp.validate_checksum());
     println!("Attempting to get ahci state");
-    let maybe_ahci = unsafe { AHCIState::new(&mut mapper, &mut frame_allocator, 0, 0, 0) };
+    let maybe_disk = unsafe { AHCIState::new(&mut mapper, &mut frame_allocator, 0, 0, 0) };
 
-    match maybe_ahci {
-        Some(_) => println!("AHCI found"),
-        None => println!("AHCI not found :("),
-    };
+    let sata_disk = maybe_disk.unwrap();
 }
 
 use core::panic::PanicInfo;

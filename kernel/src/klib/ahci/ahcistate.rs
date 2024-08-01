@@ -30,8 +30,9 @@ const SECTOR_SIZE: u32 = 512;
 
 const CFIS_COMMAND: u32 = 0x8027;
 
-const DRIVE_REGISTER: OnceCell<RwLock<&'static mut Registers>> = OnceCell::new();
-static mut DRIVE_REGISTERS: [OnceCell<RwLock<&'static mut Registers>>; 5] = [DRIVE_REGISTER; 5];
+static mut DRIVE_REGISTER: OnceCell<RwLock<&'static mut Registers>> = OnceCell::new();
+
+pub static mut SATA_DISK0: OnceCell<RwLock<&'static mut AHCIState>> = OnceCell::new();
 
 #[repr(C)]
 pub struct AHCIState {
@@ -81,8 +82,6 @@ impl AHCIState {
         regs: &'static RwLock<&'static mut Registers>,
     ) -> Box<Self> {
         use PortCommandMasks::*;
-
-        println!("going to init");
 
         let port_reg_ptr = {
             let regs_ptr = *regs.read() as *const Registers as *const u8;
@@ -252,7 +251,7 @@ impl AHCIState {
         bus: u32,
         slot: u32,
         func: u32,
-    ) -> Option<&'static Self> {
+    ) -> Result<(), ()> {
         let mut pci = PCIState::new();
         let mut addr_opt = Some((bus, slot, func));
 
@@ -274,11 +273,8 @@ impl AHCIState {
 
             println!("going through: {bus}, {slot}, {func}");
 
-            /*let frame = frame_allocator
-            .allocate_frame()
-            .expect("Failed to allocate frame for AHCI");*/
-
             let regs_page: Page<Size4KiB> = Page::containing_address(VirtAddr::new(phys_addr));
+            // FIXME XXX: Need to make sure we don't overlap with allocated frames in the BootInfoFrameAllocator.
             let frame = PhysFrame::containing_address(PhysAddr::new(phys_addr));
 
             let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
@@ -315,20 +311,18 @@ impl AHCIState {
                 if ((drive_regs_ptr.read_volatile()).port_mask & (1u32 << slot)) != 0
                     && (port_reg_ptr.read_volatile()).sstatus != 0
                 {
-                    for maybe_lock in DRIVE_REGISTERS.iter() {
-                        match (*maybe_lock).set(RwLock::new(&mut *drive_regs_ptr)) {
-                            Err(_) => {
-                                // This slot has been claimed.
-                            }
-                            Ok(()) => {
-                                println!("Found one: {fslot}");
-                                let _ =
-                                    unsafe { (*maybe_lock).set(RwLock::new(&mut *drive_regs_ptr)) };
-                                let lock_ref = (*maybe_lock).get().unwrap();
-                                let ahci_state =
-                                    unsafe { AHCIState::init(bus, fslot, func, fslot, lock_ref) };
-                                return Some(Box::<AHCIState>::leak(ahci_state));
-                            }
+                    match DRIVE_REGISTER.set(RwLock::new(&mut *drive_regs_ptr)) {
+                        Err(_) => {
+                            // TODO: This slot has been claimed. Assume *for now* this is the same
+                            // drive.
+                        }
+                        Ok(()) => {
+                            println!("Found one: {fslot}");
+                            let lock_ref = DRIVE_REGISTER.get().unwrap();
+                            let ahci_state =
+                                unsafe { AHCIState::init(bus, fslot, func, fslot, lock_ref) };
+                            let _ = SATA_DISK0.set(RwLock::new(Box::<AHCIState>::leak(ahci_state)));
+                            return Ok(());
                         }
                     }
                 }
@@ -337,11 +331,11 @@ impl AHCIState {
             addr_opt = pci.next_addr(bus, slot, func);
         }
 
-        None
+        Err(())
     }
 
     // Issue an NCQ (Native Command Queueing) command to the disk
-    // Must preceed with clear_slot(slot) and push_buffer(slot).
+    // Must preceed call with clear_slot(slot) and push_buffer(slot).
     // `fua`: If true, then don't acknowledge the write until data has been durably
     // written to disk. `priority`: 0 is normal priority, 2 is high priority
     fn issue_ncq(
@@ -371,11 +365,9 @@ impl AHCIState {
         // IMPORTANT: Add this back in when we have multicore and have implemented
         // atomic std::atomic_thread_fence(std::sync::atomic::Ordering::Release);
 
-        unsafe {
-            (*self.port_registers).ncq_active = 1 << slot; // tell interface NCQ slot used
-            (*self.port_registers).command_mask = 1 << slot; // tell interface command available
-        }
-        // The write to `command_mask` wakes up the device.
+        (*self.port_registers).ncq_active = 1 << slot; // tell interface NCQ slot used
+        (*self.port_registers).command_mask = 1 << slot; // tell interface command available
+                                                         // The write to `command_mask` wakes up the device.
 
         self.slots_outstanding_mask |= 1 << slot; // remember slot
         self.num_slots_available -= 1;
@@ -451,10 +443,8 @@ impl AHCIState {
         // IMPORTANT: Uncomment once multicore and atomic are done
         // std::atomic_thread_fence(std::memory_order_release);
 
-        unsafe {
-            // tell interface command is available
-            (*self.port_registers).command_mask = 1 << slot;
-        };
+        // tell interface command is available
+        (*self.port_registers).command_mask = 1 << slot;
 
         self.slots_outstanding_mask |= 1 << slot;
         self.num_slots_available -= 1;
@@ -466,10 +456,8 @@ impl AHCIState {
     }
 
     unsafe fn await_basic(&mut self, slot: u32) {
-        unsafe {
-            while (*self.port_registers).command_mask & (1u32 << slot) != 0 {
-                pause();
-            }
+        while (*self.port_registers).command_mask & (1u32 << slot) != 0 {
+            pause();
         }
 
         unsafe { self.acknowledge(slot, 0) };
