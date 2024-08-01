@@ -1,6 +1,7 @@
 pub mod ahci;
 pub mod graphics;
 pub mod idt;
+pub mod once_lock;
 pub mod pci;
 pub mod pic;
 pub mod ps2;

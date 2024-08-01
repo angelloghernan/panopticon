@@ -2,6 +2,7 @@ use super::super::pci;
 use super::super::util;
 use super::{DMAState, PortCommandMasks, PortRegisters, Registers};
 use crate::klib::ahci::GHCMasks;
+use crate::klib::once_lock::OnceLock;
 use crate::klib::pci::pcistate::PCI_STATE;
 use crate::klib::x86_64::pause;
 use crate::println;
@@ -14,14 +15,12 @@ use pci::pcistate::PCIState;
 use pci::Register;
 use spin::RwLock;
 use util::Volatile;
-use x86_64::structures::paging::FrameAllocator;
 use x86_64::structures::paging::Mapper;
 use x86_64::structures::paging::OffsetPageTable;
 use x86_64::structures::paging::Page;
 use x86_64::structures::paging::PageTableFlags;
 use x86_64::structures::paging::PhysFrame;
 use x86_64::structures::paging::Size4KiB;
-use x86_64::structures::paging::Translate;
 use x86_64::PhysAddr;
 use x86_64::VirtAddr;
 
@@ -30,9 +29,15 @@ const SECTOR_SIZE: u32 = 512;
 
 const CFIS_COMMAND: u32 = 0x8027;
 
-static mut DRIVE_REGISTER: OnceCell<RwLock<&'static mut Registers>> = OnceCell::new();
+static DRIVE_REGISTER: OnceLock<RwLock<&'static mut Registers>> = OnceLock::new();
 
-pub static mut SATA_DISK0: OnceCell<RwLock<&'static mut AHCIState>> = OnceCell::new();
+pub static SATA_DISK0: OnceLock<RwLock<&'static mut AHCIState>> = OnceLock::new();
+
+// NCQ slot statuses; i.e., showing which commands have finished.
+// I would love to lower this into AHCIState safely, but rn my brain is cooked and I can't really
+// think of a nice way to do it. this is the quick and dirty way. I don't anticipate any major
+// safety problems from this anyway *at the moment*; eventually this will have to change.
+static mut SLOT_STATUS: [*mut u32; 32] = [core::ptr::null_mut(); 32];
 
 #[repr(C)]
 pub struct AHCIState {
@@ -56,12 +61,6 @@ pub struct AHCIState {
     // These are modifiable
     num_slots_available: u16,
     slots_outstanding_mask: u16,
-
-    // This is modified by the hardware itself and our code.
-    // Can't use a reference here because the statuses will be too short-lived.
-    // TODO: clean this up to be safe. tbh, i'm just trying to rush through translating this from
-    // C++ code
-    slot_status: [*mut u32; 32],
     // TODO: Add buffer cache
 }
 
@@ -112,7 +111,6 @@ impl AHCIState {
             slots_outstanding_mask: 0,
             num_slots_available: 1,
             num_ncq_slots: 1,
-            slot_status: unsafe { core::mem::zeroed() },
         });
 
         let mut pci = PCIState::new();
@@ -467,9 +465,11 @@ impl AHCIState {
         self.slots_outstanding_mask ^= 1u16 << slot;
         self.num_slots_available += 1;
 
-        if !self.slot_status[slot as usize].is_null() {
-            unsafe { self.slot_status[slot as usize].write_volatile(result) };
-            self.slot_status[slot as usize] = core::ptr::null_mut();
+        // technically this is safe because this is only called when locked, but this is basically
+        // like juggling knives.. fixme?
+        if SLOT_STATUS[slot as usize].is_null() {
+            unsafe { SLOT_STATUS[slot as usize].write_volatile(result) };
+            SLOT_STATUS[slot as usize] = core::ptr::null_mut();
         }
     }
 }

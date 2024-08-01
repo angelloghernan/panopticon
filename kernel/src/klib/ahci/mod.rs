@@ -16,6 +16,8 @@ pub enum FISType {
     SetDeviceBits = 0xA1,
 }
 
+const NUM_PORT_REGISTERS: usize = 32;
+
 #[repr(C)]
 pub struct PortRegisters {
     pub cmdlist_addr: u64,          // PxCLB -- Port x Command List Base Address

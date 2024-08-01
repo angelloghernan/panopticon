@@ -4,6 +4,7 @@
 #![feature(abi_x86_interrupt)]
 #![feature(maybe_uninit_uninit_array)]
 #![feature(generic_const_exprs)]
+#![feature(dropck_eyepatch)]
 #![feature(offset_of)]
 
 mod allocator;
@@ -147,9 +148,10 @@ fn init(boot_info: &'static mut BootInfo) {
     let rsdp = unsafe { Rsdp::get(rsdp_addr as usize) };
     println!("Rsdp validation returns {}", rsdp.validate_checksum());
     println!("Attempting to get ahci state");
-    let maybe_disk = unsafe { AHCIState::new(&mut mapper, &mut frame_allocator, 0, 0, 0) };
+    let _ = unsafe { AHCIState::new(&mut mapper, &mut frame_allocator, 0, 0, 0) };
 
-    let sata_disk = maybe_disk.unwrap();
+    let sata_lock = SATA_DISK0.get().unwrap();
+    let sata_guard = sata_lock.write();
 }
 
 use core::panic::PanicInfo;
