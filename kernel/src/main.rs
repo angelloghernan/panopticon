@@ -5,6 +5,7 @@
 #![feature(maybe_uninit_uninit_array)]
 #![feature(generic_const_exprs)]
 #![feature(dropck_eyepatch)]
+#![feature(never_type)]
 #![feature(offset_of)]
 
 mod allocator;

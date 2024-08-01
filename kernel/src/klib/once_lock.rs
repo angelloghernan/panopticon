@@ -1,5 +1,6 @@
 use core::cell::UnsafeCell;
 use core::fmt;
+use core::hint::unreachable_unchecked;
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
 use core::panic::{RefUnwindSafe, UnwindSafe};
@@ -228,7 +229,6 @@ impl<T> OnceLock<T> {
     /// }
     /// ```
     #[inline]
-    #[unstable(feature = "once_cell_try_insert", issue = "116693")]
     pub fn try_insert(&self, value: T) -> Result<&T, (&T, T)> {
         let mut value = Some(value);
         let res = self.get_or_init(|| value.take().unwrap());
@@ -236,6 +236,58 @@ impl<T> OnceLock<T> {
             None => Ok(res),
             Some(value) => Err((res, value)),
         }
+    }
+
+    pub fn get_or_init<F>(&self, f: F) -> &T
+    where
+        F: FnOnce() -> T,
+    {
+        match self.get_or_try_init(|| Ok::<T, !>(f())) {
+            Ok(val) => val,
+            // The compiler version used by me does not support whatever rule is being used
+            // currently by the stdlib, but this is semantically equivalent to what was being said
+            // before (that Err is impossible to reach).
+            Err(_) => unsafe { unreachable_unchecked() },
+        }
+    }
+
+    pub fn get_or_try_init<F, E>(&self, f: F) -> Result<&T, E>
+    where
+        F: FnOnce() -> Result<T, E>,
+    {
+        // Fast path check
+        // NOTE: We need to perform an acquire on the state in this method
+        // in order to correctly synchronize `LazyLock::force`. This is
+        // currently done by calling `self.get()`, which in turn calls
+        // `self.is_initialized()`, which in turn performs the acquire.
+        if let Some(value) = self.get() {
+            return Ok(value);
+        }
+        self.initialize(f)?;
+
+        debug_assert!(self.is_initialized());
+
+        // SAFETY: The inner value has been initialized
+        Ok(unsafe { self.get_unchecked() })
+    }
+
+    #[cold]
+    fn initialize<F, E>(&self, f: F) -> Result<(), E>
+    where
+        F: FnOnce() -> Result<T, E>,
+    {
+        let mut res: Result<(), E> = Ok(());
+        let slot = &self.value;
+
+        self.once.call_once(|| match f() {
+            Ok(value) => {
+                unsafe { (&mut *slot.get()).write(value) };
+            }
+            Err(e) => {
+                res = Err(e);
+            }
+        });
+        res
     }
 
     /// Consumes the `OnceLock`, returning the wrapped value. Returns
