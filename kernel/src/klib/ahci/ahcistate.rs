@@ -35,7 +35,7 @@ static mut DRIVE_REGISTERS: [OnceCell<RwLock<&'static mut Registers>>; 5] = [DRI
 
 #[repr(C)]
 pub struct AHCIState {
-    dma: DMAState,
+    dma: Box<DMAState>,
     bus: u32,
     slot: u32,
     func: u32,
@@ -79,12 +79,11 @@ impl AHCIState {
         func_number: u32,
         sata_port: u32,
         regs: &'static RwLock<&'static mut Registers>,
-    ) -> Self {
+    ) -> Box<Self> {
         use PortCommandMasks::*;
 
         println!("going to init");
 
-        let dma: DMAState = unsafe { core::mem::zeroed() };
         let port_reg_ptr = {
             let regs_ptr = *regs.read() as *const Registers as *const u8;
             // Index into the array of port registers, located past the drive registers.
@@ -98,7 +97,9 @@ impl AHCIState {
             &mut (*port_reg_ptr)
         };
 
-        let mut ahci = AHCIState {
+        let dma: Box<DMAState> = Box::new(unsafe { core::mem::zeroed() });
+
+        let mut ahci = Box::new(AHCIState {
             dma,
             bus,
             slot,
@@ -113,7 +114,7 @@ impl AHCIState {
             num_slots_available: 1,
             num_ncq_slots: 1,
             slot_status: unsafe { core::mem::zeroed() },
-        };
+        });
 
         let mut pci = PCIState::new();
         unsafe { pci.config_write(bus, slot, func_number, Register::Command, 0x7u16) }; // Enable I/O
@@ -320,13 +321,12 @@ impl AHCIState {
                                 // This slot has been claimed.
                             }
                             Ok(()) => {
-                                println!("Found one");
+                                println!("Found one: {fslot}");
                                 let _ =
                                     unsafe { (*maybe_lock).set(RwLock::new(&mut *drive_regs_ptr)) };
                                 let lock_ref = (*maybe_lock).get().unwrap();
-                                let ahci_state = unsafe {
-                                    Box::new(AHCIState::init(bus, fslot, func, fslot, lock_ref))
-                                };
+                                let ahci_state =
+                                    unsafe { AHCIState::init(bus, fslot, func, fslot, lock_ref) };
                                 return Some(Box::<AHCIState>::leak(ahci_state));
                             }
                         }

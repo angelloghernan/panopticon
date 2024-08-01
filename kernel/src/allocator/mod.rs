@@ -124,10 +124,7 @@ impl BuddyAllocator {
         let mut heads = [NO_BLOCK; NUM_ORDERS as usize];
         heads[(NUM_ORDERS - 1) as usize] = 0;
 
-        Self {
-            blocks: [block; NUM_BLOCKS as usize],
-            heads,
-        }
+        Self { blocks, heads }
     }
 
     fn get_block_index(block_ptr: *mut u8) -> usize {
@@ -143,10 +140,12 @@ impl BuddyAllocator {
             return None;
         }
 
+        debug_assert!(self.blocks[head_index as usize].free);
+
         self.blocks[head_index as usize].free = false;
 
         let head = self.blocks[head_index as usize];
-        self.heads[head_index as usize] = head.next;
+        self.heads[order as usize] = head.next; // crash, index 256, len 10
 
         Some(head_index)
     }
@@ -161,6 +160,7 @@ impl BuddyAllocator {
 
         self.heads[order as usize] = block_index;
 
+        self.blocks[block_index as usize].previous = NO_BLOCK;
         self.blocks[block_index as usize].next = head_index;
         self.blocks[block_index as usize].order = order;
         self.blocks[block_index as usize].free = true;
