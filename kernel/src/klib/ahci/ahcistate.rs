@@ -7,14 +7,17 @@ use crate::klib::pci::pcistate::PCI_STATE;
 use crate::klib::x86_64::pause;
 use crate::println;
 use crate::BootInfoFrameAllocator;
+use crate::IDEController;
 use alloc::boxed::Box;
 use core::cell::OnceCell;
 use core::marker::PhantomData;
 use core::ptr::addr_of;
+use pci::ide_controller::Command as IDECommand;
 use pci::pcistate::PCIState;
 use pci::Register;
 use spin::RwLock;
 use util::Volatile;
+use x86_64::instructions::interrupts;
 use x86_64::structures::paging::Mapper;
 use x86_64::structures::paging::OffsetPageTable;
 use x86_64::structures::paging::Page;
@@ -234,14 +237,38 @@ impl AHCIState {
 
                 ahci.irq = intr_line as u32;
 
+                // FIXME: actually register , because this triggers an interrupt
                 // finally, clear pending interrupts again
-                ahci.port_registers.interrupt_status = !0;
-                (*(*ahci.drive_registers.write())).interrupt_status = !0;
+                // ahci.port_registers.interrupt_status = !0;
+                // (*(*ahci.drive_registers.write())).interrupt_status = !0;
             }
         }
 
         ahci
     }
+
+    /*pub fn read_or_write(
+        &mut self,
+        command: IDECommand,
+        buf: &mut [u8],
+        offset: usize,
+    ) -> Result<(), IOError> {
+        let mut r = IOError::TryAgain as u32;
+        interrupts::without_interrupts(|| {
+            unsafe { SLOT_STATUS[0] = &mut r as *mut u32 };
+            self.clear_slot(0);
+            self.push_buffer(0, buf.as_mut_ptr() as *mut _, buf.len());
+            self.issue_ncq(0, command, offset / SECTOR_SIZE, true);
+        });
+
+        while r == IOError::TryAgain as u32 {
+            unsafe { core::arch::x86_64::_mm_pause() };
+        }
+
+        unsafe { SLOT_STATUS[0] = core::ptr::null_mut() };
+
+        Ok(())
+    }*/
 
     pub unsafe fn new(
         mapper: &mut OffsetPageTable<'_>,
@@ -313,6 +340,7 @@ impl AHCIState {
                         Err(_) => {
                             // TODO: This slot has been claimed. Assume *for now* this is the same
                             // drive.
+                            return Err(());
                         }
                         Ok(()) => {
                             println!("Found one: {fslot}");
@@ -467,7 +495,7 @@ impl AHCIState {
 
         // technically this is safe because this is only called when locked, but this is basically
         // like juggling knives.. fixme?
-        if SLOT_STATUS[slot as usize].is_null() {
+        if !SLOT_STATUS[slot as usize].is_null() {
             unsafe { SLOT_STATUS[slot as usize].write_volatile(result) };
             SLOT_STATUS[slot as usize] = core::ptr::null_mut();
         }
@@ -497,4 +525,9 @@ enum InterruptMasks {
     NCQComplete = 0x8,
     ErrorMask = 0x7D800010,
     FatalErrorMask = 0x78000000, // HBFS|HBDS|IFS|TFES
+}
+
+#[repr(u8)]
+enum IOError {
+    TryAgain = 0,
 }

@@ -22,6 +22,8 @@ fn main() {
         .arg("file=img/disk.img,if=none,format=raw,id=maindisk");
     cmd.arg("-device").arg("ahci,id=ahci");
     cmd.arg("-device").arg("ide-hd,drive=maindisk,bus=ahci.0");
+    // cmd.arg("-s");
+    // cmd.arg("-S");
     // -device piix4-ide,bus=pci.0,id=piix4-ide
     // -drive file=${OBJ_FOLDER}/${OS_IMAGE},if=none,format=raw,id=bootdisk\
     //-device ide-hd,drive=bootdisk,bus=piix4-ide.0 \
@@ -34,5 +36,8 @@ fn main() {
     args.iter()
         .for_each(|arg| println!("{}", arg.to_str().unwrap()));
     let mut child = cmd.spawn().unwrap();
+    // let mut cmd = std::process::Command::new("gdb");
+    // let mut gdb_child = cmd.spawn().unwrap();
+    // gdb_child.wait().unwrap();
     child.wait().unwrap();
 }
