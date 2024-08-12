@@ -13,6 +13,7 @@ mod klib;
 mod memory;
 use crate::klib::ahci::ahcistate::AHCIState;
 use crate::klib::ahci::ahcistate::SATA_DISK0;
+use crate::klib::pci::ide_controller::Command::ReadFPDMAQueued;
 use crate::klib::pci::ide_controller::IDEController;
 use crate::klib::ps2;
 use crate::memory::init_page_table;
@@ -151,8 +152,24 @@ fn init(boot_info: &'static mut BootInfo) {
     println!("Attempting to get ahci state");
     let _ = unsafe { AHCIState::new(&mut mapper, &mut frame_allocator, 0, 0, 0) };
 
-    let sata_lock = SATA_DISK0.get().unwrap();
-    let sata_guard = sata_lock.write();
+    match SATA_DISK0.get() {
+        Some(disk_lock) => {
+            let mut disk = disk_lock.write();
+            unsafe { disk.enable_interrupts() };
+            println!(
+                "Initialized AHCI disk, interrupts enabled: {}",
+                interrupts::are_enabled()
+            );
+            let mut buf = [0u8; 1024];
+            let res = disk.read_or_write(ReadFPDMAQueued, &mut buf, 0);
+
+            match res {
+                Ok(_) => println!("Read {} bytes from disk", buf.len()),
+                Err(_) => println!("Failed to read bytes from disk"),
+            }
+        }
+        None => panic!("Failed to initialize AHCI disk"),
+    };
 }
 
 use core::panic::PanicInfo;
@@ -194,6 +211,17 @@ fn sleep(milliseconds: u64) {
     while TIMER.load(SeqCst) < time + milliseconds {
         // TODO: Do something else instead of just waiting; do other scheduled tasks.
         unsafe { klib::x86_64::io_wait() };
+    }
+}
+
+extern "x86-interrupt" fn ahci_handler(_stack_frame: StackFrame) {
+    match SATA_DISK0.get() {
+        Some(disk_lock) => {
+            (*disk_lock.write()).handle_interrupt();
+        }
+        None => {
+            panic!("Unexpected call to AHCI handler");
+        }
     }
 }
 

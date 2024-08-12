@@ -20,40 +20,40 @@ const NUM_PORT_REGISTERS: usize = 32;
 
 #[repr(C)]
 pub struct PortRegisters {
-    pub cmdlist_addr: u64,          // PxCLB -- Port x Command List Base Address
-    pub rfis_base_addr: u64, // PxRFIS -- Port x RFIS Base Address -- the base address of rfis_state
-    pub interrupt_status: u32, // PxIS
-    pub interrupt_enable: u32, // PxIE
-    pub command_and_status: u32, // PxCMD -- Port x Command and Status
-    pub reserved2: u32,      // 0x2C - 0x2F are reserved
-    pub tfd: u32,            // PxTFD -- Port x Task File Data
-    pub sig: u32,            // PxSIG -- Port x Signature
-    pub sstatus: u32,        // PxSSTS -- Port x SATA Status, 0 = no device detected
-    pub scontrol: u32,       // PxSCTL -- Port x SATA Control
-    pub serror: u32,         // PxSERR -- Port x SATA Error
-    pub ncq_active: u32,     // PxSACT -- Port x SATA Active
-    pub command_mask: u32,   // PxCI -- Port x Command Issue
-    pub sata_notification: u32, // PxSNTF -- Port x SATA Notification
-    pub fis_switch_control: u32, // PxFBS -- Port x FIS-based switching control
-    pub device_sleep: u32,   // PxDEVSLP -- Port x Device Sleep
-    pub vendor_specific: [u32; 14], // PxVS -- Port x Vendor Specific (ignore)
+    pub cmdlist_addr: Volatile<u64>, // PxCLB -- Port x Command List Base Address
+    pub rfis_base_addr: Volatile<u64>, // PxRFIS -- Port x RFIS Base Address -- the base address of rfis_state
+    pub interrupt_status: Volatile<u32>, // PxIS
+    pub interrupt_enable: Volatile<u32>, // PxIE
+    pub command_and_status: Volatile<u32>, // PxCMD -- Port x Command and Status
+    pub reserved2: u32,                // 0x2C - 0x2F are reserved
+    pub tfd: Volatile<u32>,            // PxTFD -- Port x Task File Data
+    pub sig: Volatile<u32>,            // PxSIG -- Port x Signature
+    pub sstatus: Volatile<u32>,        // PxSSTS -- Port x SATA Status, 0 = no device detected
+    pub scontrol: Volatile<u32>,       // PxSCTL -- Port x SATA Control
+    pub serror: Volatile<u32>,         // PxSERR -- Port x SATA Error
+    pub ncq_active: Volatile<u32>,     // PxSACT -- Port x SATA Active
+    pub command_mask: Volatile<u32>,   // PxCI -- Port x Command Issue
+    pub sata_notification: Volatile<u32>, // PxSNTF -- Port x SATA Notification
+    pub fis_switch_control: Volatile<u32>, // PxFBS -- Port x FIS-based switching control
+    pub device_sleep: Volatile<u32>,   // PxDEVSLP -- Port x Device Sleep
+    pub vendor_specific: [u32; 14],    // PxVS -- Port x Vendor Specific (ignore)
 }
 
 #[repr(C)]
 pub struct Registers {
-    pub capabilities: u32,       // CAP: HBA capabilities [R]
-    pub global_hba_control: u32, // GHC: global HBA control [R/W]
-    pub interrupt_status: u32,   // IS: interrupt status
-    pub port_mask: u32,          // PI: addressable ports
-    pub ahci_version: u32,       // VS: AHCI version
-    pub ccc_control: u32,        // CCC_CTL: Command Completion Coalescing Control
-    pub ccc_port_mask: u32,      // CCC_PORTS
-    pub em_loc: u32,             // EM_LOC: Enclosure Management Location
-    pub em_control: u32,         // EM_CTL: Enclosure Management Control
-    pub cap2: u32,               // CAP2: HBA Capabilities extended
-    pub bohc: u32,               // BOHC: BIOS/OS Handoff Control and Status
-    pub reserved: [u32; 53],     // Vendor specific registers
-                                 // pub port_regs: [PortRegisters; 32],
+    pub capabilities: Volatile<u32>,       // CAP: HBA capabilities [R]
+    pub global_hba_control: Volatile<u32>, // GHC: global HBA control [R/W]
+    pub interrupt_status: Volatile<u32>,   // IS: interrupt status
+    pub port_mask: Volatile<u32>,          // PI: addressable ports
+    pub ahci_version: Volatile<u32>,       // VS: AHCI version
+    pub ccc_control: Volatile<u32>,        // CCC_CTL: Command Completion Coalescing Control
+    pub ccc_port_mask: Volatile<u32>,      // CCC_PORTS
+    pub em_loc: Volatile<u32>,             // EM_LOC: Enclosure Management Location
+    pub em_control: Volatile<u32>,         // EM_CTL: Enclosure Management Control
+    pub cap2: Volatile<u32>,               // CAP2: HBA Capabilities extended
+    pub bohc: Volatile<u32>,               // BOHC: BIOS/OS Handoff Control and Status
+    pub reserved: [u32; 53],               // Vendor specific registers
+                                           // pub port_regs: [PortRegisters; 32],
 }
 
 #[repr(u32)]

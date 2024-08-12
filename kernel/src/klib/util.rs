@@ -1,4 +1,6 @@
 use core::mem::size_of;
+use core::ops::BitAnd;
+use core::ops::DerefMut;
 use core::slice::from_raw_parts;
 
 pub fn as_u8_slice<T: Sized>(obj: &T) -> &[u8] {
@@ -15,6 +17,7 @@ pub fn physical_to_kernel_address(addr: u64) -> u64 {
     addr
 }
 
+#[repr(transparent)]
 #[derive(Clone, Copy)]
 pub struct Volatile<T: Clone + Copy> {
     data: T,
@@ -33,8 +36,8 @@ impl<T: Clone + Copy> Volatile<T> {
     }
 
     #[inline]
-    pub fn write(&mut self, data: &T) {
+    pub fn write(&mut self, data: T) {
         let ptr = &mut self.data as *mut T;
-        unsafe { core::ptr::write_volatile(ptr, *data) }
+        unsafe { core::ptr::write_volatile(ptr, data) }
     }
 }

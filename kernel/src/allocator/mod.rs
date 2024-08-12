@@ -5,7 +5,6 @@ use core::alloc::GlobalAlloc;
 use core::alloc::Layout;
 use core::cmp::max;
 use lazy_static::lazy_static;
-use spin::Mutex;
 use x86_64::{
     structures::paging::{
         mapper::MapToError, FrameAllocator, Mapper, Page, PageTableFlags, Size4KiB,
