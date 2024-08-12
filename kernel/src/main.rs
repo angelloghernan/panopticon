@@ -13,6 +13,7 @@ mod klib;
 mod memory;
 use crate::klib::ahci::ahcistate::AHCIState;
 use crate::klib::ahci::ahcistate::SATA_DISK0;
+use crate::klib::once_lock::OnceLock;
 use crate::klib::pci::ide_controller::Command::ReadFPDMAQueued;
 use crate::klib::pci::ide_controller::IDEController;
 use crate::klib::ps2;
@@ -31,9 +32,11 @@ use pic::PIC;
 use ps2::keyboard::KeyCode;
 use ps2::keyboard::SpecialKey;
 use ps2::keyboard::KEYBOARD;
+use spin::RwLock;
 use x86_64::instructions::interrupts;
 use x86_64::structures::paging::FrameAllocator;
 use x86_64::structures::paging::Mapper;
+use x86_64::structures::paging::OffsetPageTable;
 use x86_64::structures::paging::Page;
 use x86_64::structures::paging::PageTableFlags;
 use x86_64::structures::paging::Size4KiB;
@@ -54,6 +57,8 @@ lazy_static! {
 }
 
 static TIMER: AtomicU64 = AtomicU64::new(0);
+
+static KERNEL_PAGETABLE: OnceLock<RwLock<OffsetPageTable<'static>>> = OnceLock::new();
 
 fn kernel_main(boot_info: &'static mut BootInfo) -> ! {
     init(boot_info);
@@ -147,10 +152,12 @@ fn init(boot_info: &'static mut BootInfo) {
 
     // let ide_controller = IDEController::new();
 
+    KERNEL_PAGETABLE.set(RwLock::new(mapper));
+
     let rsdp = unsafe { Rsdp::get(rsdp_addr as usize) };
     println!("Rsdp validation returns {}", rsdp.validate_checksum());
     println!("Attempting to get ahci state");
-    let _ = unsafe { AHCIState::new(&mut mapper, &mut frame_allocator, 0, 0, 0) };
+    let _ = unsafe { AHCIState::new(&mut frame_allocator, 0, 0, 0) };
 
     match SATA_DISK0.get() {
         Some(disk_lock) => {

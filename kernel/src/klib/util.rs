@@ -1,7 +1,12 @@
+use crate::KERNEL_PAGETABLE;
 use core::mem::size_of;
 use core::ops::BitAnd;
 use core::ops::DerefMut;
 use core::slice::from_raw_parts;
+use x86_64::structures::paging::Mapper;
+use x86_64::structures::paging::Page;
+use x86_64::structures::paging::Size4KiB;
+use x86_64::VirtAddr;
 
 pub fn as_u8_slice<T: Sized>(obj: &T) -> &[u8] {
     unsafe { from_raw_parts((obj as *const T) as *const u8, size_of::<T>()) }
@@ -9,7 +14,14 @@ pub fn as_u8_slice<T: Sized>(obj: &T) -> &[u8] {
 
 #[inline]
 pub fn kernel_to_physical_address(addr: u64) -> u64 {
-    addr
+    let offset = addr & 0xFFF;
+    let pt_lock = KERNEL_PAGETABLE.get().unwrap().read();
+    (*pt_lock)
+        .translate_page(Page::<Size4KiB>::containing_address(VirtAddr::new(addr)))
+        .unwrap()
+        .start_address()
+        .as_u64()
+        + offset
 }
 
 #[inline]

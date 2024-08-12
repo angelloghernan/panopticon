@@ -1,17 +1,14 @@
 use super::super::pci;
 use super::super::util;
 use super::{DMAState, PortCommandMasks, PortRegisters, Registers};
-use crate::allocator::PAGESIZE;
 use crate::klib::ahci::GHCMasks;
 use crate::klib::once_lock::OnceLock;
 use crate::klib::pci::pcistate::PCI_STATE;
 use crate::klib::x86_64::pause;
 use crate::println;
 use crate::BootInfoFrameAllocator;
-use crate::IDEController;
-use crate::PIC;
+use crate::KERNEL_PAGETABLE;
 use alloc::boxed::Box;
-use core::cell::OnceCell;
 use core::marker::PhantomData;
 use core::ptr::addr_of;
 use core::ptr::addr_of_mut;
@@ -121,8 +118,11 @@ impl AHCIState {
             num_ncq_slots: 1,
         });
 
-        let mut pci = PCIState::new();
-        unsafe { pci.config_write(bus, slot, func_number, Register::Command, 0x7u16) }; // Enable I/O
+        unsafe {
+            PCI_STATE
+                .lock()
+                .config_write(bus, slot, func_number, Register::Command, 0x7u16)
+        }; // Enable I/O
         let mask = !((RFISEnable as u32) | (Start as u32));
 
         let running_mask = (CommandRunning as u32) | (RFISRunning as u32);
@@ -131,13 +131,16 @@ impl AHCIState {
             .command_and_status
             .write(ahci.port_registers.command_and_status.read() & mask);
 
+        println!("Wait 1");
+
         while ahci.port_registers.command_and_status.read() & running_mask != 0 {
             // TODO: Maybe change this to use a wait queue?
             pause();
         }
 
-        for ch in ahci.dma.ch.iter_mut() {
-            ch.command_table_address = util::kernel_to_physical_address(ch.command_table_address);
+        for (i, ch) in ahci.dma.ch.iter_mut().enumerate() {
+            ch.command_table_address =
+                util::kernel_to_physical_address(addr_of!(ahci.dma.ct[i]) as u64);
         }
 
         // Pretty much everything here is unsafe. Look at those pointer derefs!
@@ -146,6 +149,8 @@ impl AHCIState {
             use super::InterruptMasks::*;
             use super::PortCommandMasks::*;
             use super::RStatusMasks::*;
+
+            let mut pt_lock = KERNEL_PAGETABLE.get().unwrap().write();
 
             ahci.port_registers
                 .cmdlist_addr
@@ -177,8 +182,13 @@ impl AHCIState {
                 .interrupt_enable
                 .write(DeviceToHost as u32 | NCQComplete as u32 | ErrorMask as u32);
 
+            ahci.port_registers.command_and_status.write(
+                ahci.port_registers.command_and_status.read() | PortCommandMasks::RFISEnable as u32,
+            );
+
             let busy = Busy as u32 | DataReq as u32;
 
+            println!("Wait 2");
             while ahci.port_registers.tfd.read() & busy != 0
                 || !sstatus_active(ahci.port_registers.sstatus.read())
             {
@@ -190,11 +200,14 @@ impl AHCIState {
                     | InterfaceActive as u32,
             );
 
+            println!("Wait 3");
             while ahci.port_registers.command_and_status.read() & InterfaceMask as u32
                 != InterfaceIdle as u32
             {
                 pause();
             }
+
+            println!("Wait 4");
 
             ahci.port_registers
                 .command_and_status
@@ -316,7 +329,6 @@ impl AHCIState {
     }
 
     pub unsafe fn new(
-        mapper: &mut OffsetPageTable<'_>,
         frame_allocator: &mut BootInfoFrameAllocator,
         bus: u32,
         slot: u32,
@@ -354,7 +366,7 @@ impl AHCIState {
             let flags =
                 PageTableFlags::PRESENT | PageTableFlags::WRITABLE | PageTableFlags::NO_CACHE;
             unsafe {
-                mapper
+                (*KERNEL_PAGETABLE.get().unwrap().write())
                     .map_to(drive_regs_page, drive_frame, flags, frame_allocator)
                     .expect("Failed to map AHCI address in pagetable!")
                     .flush();
