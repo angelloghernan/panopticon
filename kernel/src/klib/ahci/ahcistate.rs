@@ -19,7 +19,6 @@ use spin::RwLock;
 use util::Volatile;
 use x86_64::instructions::interrupts;
 use x86_64::structures::paging::Mapper;
-use x86_64::structures::paging::OffsetPageTable;
 use x86_64::structures::paging::Page;
 use x86_64::structures::paging::PageTableFlags;
 use x86_64::structures::paging::PhysFrame;
@@ -125,13 +124,13 @@ impl AHCIState {
         }; // Enable I/O
         let mask = !((RFISEnable as u32) | (Start as u32));
 
-        let running_mask = (CommandRunning as u32) | (RFISRunning as u32);
-
         ahci.port_registers
             .command_and_status
             .write(ahci.port_registers.command_and_status.read() & mask);
 
         println!("Wait 1");
+
+        let running_mask = (CommandRunning as u32) | (RFISRunning as u32);
 
         while ahci.port_registers.command_and_status.read() & running_mask != 0 {
             // TODO: Maybe change this to use a wait queue?
@@ -150,7 +149,11 @@ impl AHCIState {
             use super::PortCommandMasks::*;
             use super::RStatusMasks::*;
 
-            let mut pt_lock = KERNEL_PAGETABLE.get().unwrap().write();
+            println!(
+                "Both addresses: {:#x} {:#x}",
+                addr_of!(ahci.dma.ch[0]) as u64,
+                util::kernel_to_physical_address(addr_of!(ahci.dma.ch[0]) as u64)
+            );
 
             ahci.port_registers
                 .cmdlist_addr
@@ -173,9 +176,7 @@ impl AHCIState {
 
             {
                 let mut regs_ptr = ahci.drive_registers.write();
-                (*regs_ptr).interrupt_status.write(!0); // TODO change this? want to change only
-                                                        // this port, i think, if that's how it
-                                                        // works
+                (*regs_ptr).interrupt_status.write(!0);
             }
 
             ahci.port_registers
@@ -275,10 +276,10 @@ impl AHCIState {
 
             // FIXME: actually register , because this triggers an interrupt
             // finally, clear pending interrupts again
+            /*(*(*ahci.drive_registers.write()))
+            .interrupt_status
+            .write(!0);*/
             ahci.port_registers.interrupt_status.write(!0);
-            (*(*ahci.drive_registers.write()))
-                .interrupt_status
-                .write(!0);
         }
 
         ahci
@@ -290,12 +291,24 @@ impl AHCIState {
         buf: &mut [u8],
         offset: usize,
     ) -> Result<(), IOError> {
+        self.port_registers.interrupt_status.write(!0);
+        println!(
+            "HBA control: {:#x}",
+            (*(self.drive_registers.read())).global_hba_control.read()
+        );
+
+        println!(
+            "interrupt enable: {:#x}",
+            self.port_registers.interrupt_enable.read()
+        );
+        println!(
+            "interrupt status: {:#x}",
+            self.port_registers.interrupt_status.read()
+        );
         let mut r = IOError::TryAgain as u32;
         let buf_handle = self.push_buffer(0, buf);
-        interrupts::without_interrupts(|| {
-            unsafe { SLOT_STATUS[0] = addr_of_mut!(r) };
-            self.issue_ncq(0, command, offset / (SECTOR_SIZE as usize), true, 0);
-        });
+        unsafe { SLOT_STATUS[0] = addr_of_mut!(r) };
+        self.issue_ncq(0, command, offset / (SECTOR_SIZE as usize), true, 0);
 
         let io_ptr = addr_of_mut!(r);
 
@@ -379,19 +392,18 @@ impl AHCIState {
             // FIXME: This isn't quite ready for multi-drive support. Needs to *ensure* that the
             // same slot is not used twice.
             let drive_regs_ptr = util::physical_to_kernel_address(phys_addr) as *mut Registers;
-            // if (drive_regs_ptr.read_volatile()).global_hba_control & GHCMasks::AHCIEnable as u32
-            //     == 0
-            // {
-            //     (*drive_regs_ptr).global_hba_control =
-            //         GHCMasks::AHCIEnable as u32 | GHCMasks::InterruptEnable as u32;
-            // }
+            if (*drive_regs_ptr).global_hba_control.read() & GHCMasks::AHCIEnable as u32 == 0 {
+                (*drive_regs_ptr)
+                    .global_hba_control
+                    .write(GHCMasks::AHCIEnable as u32 | GHCMasks::InterruptEnable as u32);
+            }
             println!(
                 "global_hba_control: {}",
                 (*drive_regs_ptr).global_hba_control.read()
             );
-            (*drive_regs_ptr)
-                .global_hba_control
-                .write(GHCMasks::AHCIEnable as u32 | GHCMasks::InterruptEnable as u32);
+            // (*drive_regs_ptr)
+            //     .global_hba_control
+            //     .write(GHCMasks::AHCIEnable as u32 | GHCMasks::InterruptEnable as u32);
 
             println!("Drive regs ptr: {:#x}", drive_regs_ptr as u64);
             println!("Capabilites: {:#x}", (*drive_regs_ptr).capabilities.read());
@@ -402,12 +414,12 @@ impl AHCIState {
 
             println!("Port mask: {}", (*drive_regs_ptr).port_mask.read());
 
-            for fslot in 0..32 {
+            for ahci_port in 0..32 {
                 let port_reg_ptr = (drive_regs_ptr as *mut u8)
                     .add(core::mem::size_of::<Registers>())
-                    .add(core::mem::size_of::<PortRegisters>() * fslot as usize)
+                    .add(core::mem::size_of::<PortRegisters>() * ahci_port as usize)
                     as *mut PortRegisters;
-                if (*drive_regs_ptr).port_mask.read() & (1u32 << slot) != 0
+                if (*drive_regs_ptr).port_mask.read() & (1u32 << ahci_port) != 0
                     && (*port_reg_ptr).sstatus.read() != 0
                 {
                     match DRIVE_REGISTER.set(RwLock::new(&mut *drive_regs_ptr)) {
@@ -417,10 +429,10 @@ impl AHCIState {
                             return Err(());
                         }
                         Ok(()) => {
-                            println!("Found one: {fslot}");
+                            println!("Found one: {ahci_port}");
                             let lock_ref = DRIVE_REGISTER.get().unwrap();
                             let ahci_state =
-                                unsafe { AHCIState::init(bus, slot, func, fslot, lock_ref) };
+                                unsafe { AHCIState::init(bus, slot, func, ahci_port, lock_ref) };
                             let _ = SATA_DISK0.set(RwLock::new(Box::<AHCIState>::leak(ahci_state)));
                             return Ok(());
                         }
@@ -449,6 +461,12 @@ impl AHCIState {
         use pci::ide_controller::Command::*;
 
         let nsectors = self.dma.ch[slot as usize].buffer_byte_pos / SECTOR_SIZE;
+        println!(
+            "Sending CFIS {:#x}-{:#x}-{:#x}",
+            CFIS_COMMAND | ((command as u32) << 16) | ((nsectors & 0xFF) << 24),
+            (sector as u32 & 0xFFFFFF) | (u32::from(fua) << 31) | 0x40000000,
+            ((sector >> 24) as u32) | ((nsectors & 0xFF00) << 16)
+        );
         self.dma.ct[slot as usize].cfis[0] =
             CFIS_COMMAND | ((command as u32) << 16) | ((nsectors & 0xFF) << 24);
         self.dma.ct[slot as usize].cfis[1] =
@@ -463,11 +481,12 @@ impl AHCIState {
 
         // ensure all previous writes have made it out to memory
         // IMPORTANT: Add this back in when we have multicore and have implemented
-        // atomic std::atomic_thread_fence(std::sync::atomic::Ordering::Release);
+        // atomic
+        core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
 
-        (*self.port_registers).ncq_active.write(1 << slot); // tell interface NCQ slot used
-        (*self.port_registers).command_mask.write(1 << slot); // tell interface command available
-                                                              // The write to `command_mask` wakes up the device.
+        self.port_registers.ncq_active.write(1 << slot); // tell interface NCQ slot used
+        self.port_registers.command_mask.write(1 << slot); // tell interface command available
+                                                           // The write to `command_mask` wakes up the device.
 
         self.slots_outstanding_mask |= 1 << slot; // remember slot
         self.num_slots_available -= 1;
@@ -499,7 +518,7 @@ impl AHCIState {
             //     != 0)
             //     || ((*self.port_registers).tfd & RStatusMasks::Error as u32 != 0);
             let mut drive_registers = self.drive_registers.write();
-            (*self.port_registers).interrupt_status.write(!0);
+            self.port_registers.interrupt_status.write(!0);
             (*drive_registers).interrupt_status.write(!0);
             let mut acks =
                 self.slots_outstanding_mask & !((*self.port_registers).ncq_active.read() as u16);
@@ -541,10 +560,10 @@ impl AHCIState {
         self.dma.ch[slot as usize].buffer_byte_pos = 0;
 
         // IMPORTANT: Uncomment once multicore and atomic are done
-        // std::atomic_thread_fence(std::memory_order_release);
+        core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
 
         // tell interface command is available
-        (*self.port_registers).command_mask.write(1 << slot);
+        self.port_registers.command_mask.write(1 << slot);
 
         self.slots_outstanding_mask |= 1 << slot;
         self.num_slots_available -= 1;

@@ -22,6 +22,12 @@ fn main() {
         .arg("file=img/disk.img,if=none,format=raw,id=maindisk");
     cmd.arg("-device").arg("ahci,id=ahci");
     cmd.arg("-device").arg("ide-hd,drive=maindisk,bus=ahci.0");
+    cmd.arg("-d")
+        .arg("trace:ahci_port_write,trace:ahci_check_irq,trace:ahci_port_read,trace:handle_cmd_*");
+    // cmd.arg("-d").arg("trace:handle_cmd_*");
+    // cmd.arg("-d").arg("trace:ahci_trigger_irq");
+    // cmd.arg("-d").arg("int");
+    // cmd.arg("-d").arg("trace:execute_ncq_command_*");
     // cmd.arg("-s");
     // cmd.arg("-S");
     // -device piix4-ide,bus=pci.0,id=piix4-ide

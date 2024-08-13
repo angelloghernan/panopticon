@@ -94,6 +94,7 @@ pub enum GHCMasks {
 // The disk drive uses these to communicate with the OS.
 
 // PRD -- this is distinct from the ATA PRD/PRDT
+#[repr(C)]
 pub struct PRD {
     address: u64,
     reserved: u32,
@@ -103,6 +104,7 @@ pub struct PRD {
 }
 
 #[repr(align(128))]
+#[repr(C)]
 pub struct CommandTable {
     pub cfis: [u32; 16], // Command definitions
     pub acmd: [u32; 4],
@@ -110,6 +112,7 @@ pub struct CommandTable {
     pub prdt: [PRD; 16],
 }
 
+#[repr(C)]
 pub struct CommandHeader {
     flags: u16,
     num_buffers: u16,
@@ -119,11 +122,13 @@ pub struct CommandHeader {
 }
 
 #[repr(align(256))]
+#[repr(C)]
 pub struct RFISState {
     pub rfis: [Volatile<u32>; 64],
 }
 
 #[repr(align(1024))]
+#[repr(C)]
 pub struct DMAState {
     pub ch: [CommandHeader; 32],
     pub rfis: RFISState,

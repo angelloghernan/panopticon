@@ -152,7 +152,7 @@ fn init(boot_info: &'static mut BootInfo) {
 
     // let ide_controller = IDEController::new();
 
-    KERNEL_PAGETABLE.set(RwLock::new(mapper));
+    let _ = KERNEL_PAGETABLE.set(RwLock::new(mapper));
 
     let rsdp = unsafe { Rsdp::get(rsdp_addr as usize) };
     println!("Rsdp validation returns {}", rsdp.validate_checksum());

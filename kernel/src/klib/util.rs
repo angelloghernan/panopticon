@@ -1,3 +1,4 @@
+use crate::println;
 use crate::KERNEL_PAGETABLE;
 use core::mem::size_of;
 use core::ops::BitAnd;
@@ -15,6 +16,7 @@ pub fn as_u8_slice<T: Sized>(obj: &T) -> &[u8] {
 #[inline]
 pub fn kernel_to_physical_address(addr: u64) -> u64 {
     let offset = addr & 0xFFF;
+    // println!("offset: {offset}");
     let pt_lock = KERNEL_PAGETABLE.get().unwrap().read();
     (*pt_lock)
         .translate_page(Page::<Size4KiB>::containing_address(VirtAddr::new(addr)))
