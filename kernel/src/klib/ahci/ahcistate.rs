@@ -86,7 +86,7 @@ impl AHCIState {
 
         let port_reg_ptr = {
             let regs_ptr = *regs.read() as *const Registers as *const u8;
-            println!("Regs ptr again: {:#x}", regs_ptr as u64);
+            // println!("Regs ptr again: {:#x}", regs_ptr as u64);
             // Index into the array of port registers, located past the drive registers.
             // This doesn't overlap with the drive registers, so this is OK to do,
             // *assuming we have not called with the same sata port before*, as specified
@@ -95,7 +95,7 @@ impl AHCIState {
                 .add(core::mem::size_of::<Registers>())
                 .add(core::mem::size_of::<PortRegisters>() * sata_port as usize)
                 as *mut PortRegisters;
-            println!("port regs ptr: {:#x}", port_reg_ptr as u64);
+            // println!("port regs ptr: {:#x}", port_reg_ptr as u64);
             &mut (*port_reg_ptr)
         };
 
@@ -128,7 +128,7 @@ impl AHCIState {
             .command_and_status
             .write(ahci.port_registers.command_and_status.read() & mask);
 
-        println!("Wait 1");
+        // println!("Wait 1");
 
         let running_mask = (CommandRunning as u32) | (RFISRunning as u32);
 
@@ -149,11 +149,11 @@ impl AHCIState {
             use super::PortCommandMasks::*;
             use super::RStatusMasks::*;
 
-            println!(
-                "Both addresses: {:#x} {:#x}",
-                addr_of!(ahci.dma.ch[0]) as u64,
-                util::kernel_to_physical_address(addr_of!(ahci.dma.ch[0]) as u64)
-            );
+            // println!(
+            //     "Both addresses: {:#x} {:#x}",
+            //     addr_of!(ahci.dma.ch[0]) as u64,
+            //     util::kernel_to_physical_address(addr_of!(ahci.dma.ch[0]) as u64)
+            // );
 
             ahci.port_registers
                 .cmdlist_addr
@@ -189,7 +189,7 @@ impl AHCIState {
 
             let busy = Busy as u32 | DataReq as u32;
 
-            println!("Wait 2");
+            // println!("Wait 2");
             while ahci.port_registers.tfd.read() & busy != 0
                 || !sstatus_active(ahci.port_registers.sstatus.read())
             {
@@ -201,14 +201,14 @@ impl AHCIState {
                     | InterfaceActive as u32,
             );
 
-            println!("Wait 3");
+            // println!("Wait 3");
             while ahci.port_registers.command_and_status.read() & InterfaceMask as u32
                 != InterfaceIdle as u32
             {
                 pause();
             }
 
-            println!("Wait 4");
+            // println!("Wait 4");
 
             ahci.port_registers
                 .command_and_status
@@ -233,15 +233,15 @@ impl AHCIState {
                 // slots per controller
                 ahci.num_ncq_slots = (((*drive_regs).capabilities.read() >> 8) & 0x1F) + 1;
             }
-            println!("Num ncq slots: {}", ahci.num_ncq_slots);
+            // println!("Num ncq slots: {}", ahci.num_ncq_slots);
 
             if (((id_buf[75].read() & 0x1F) + 1) as u32) < ahci.num_ncq_slots {
                 // slots per disk
                 ahci.num_ncq_slots = ((id_buf[75].read() & 0x1F) + 1) as u32;
             }
 
-            println!("Num ncq slots: {}", ahci.num_ncq_slots);
-            println!("Num sectors: {}", ahci.num_sectors);
+            // println!("Num ncq slots: {}", ahci.num_ncq_slots);
+            // println!("Num sectors: {}", ahci.num_sectors);
 
             ahci.slots_full_mask = if ahci.num_ncq_slots == 32 {
                 u32::MAX
@@ -272,45 +272,51 @@ impl AHCIState {
             );
 
             ahci.irq = intr_line as u32;
-            println!("AHCI interrupt line is {}", intr_line);
+            // println!("AHCI interrupt line is {}", intr_line);
 
             // FIXME: actually register , because this triggers an interrupt
             // finally, clear pending interrupts again
-            /*(*(*ahci.drive_registers.write()))
-            .interrupt_status
-            .write(!0);*/
             ahci.port_registers.interrupt_status.write(!0);
+            (*(*ahci.drive_registers.write()))
+                .interrupt_status
+                .write(!0);
         }
 
         ahci
     }
 
     pub fn read_or_write(
-        &mut self,
+        self_lock: &RwLock<&mut Self>,
         command: IDECommand,
         buf: &mut [u8],
         offset: usize,
     ) -> Result<(), IOError> {
-        self.port_registers.interrupt_status.write(!0);
-        println!(
-            "HBA control: {:#x}",
-            (*(self.drive_registers.read())).global_hba_control.read()
-        );
-
-        println!(
-            "interrupt enable: {:#x}",
-            self.port_registers.interrupt_enable.read()
-        );
-        println!(
-            "interrupt status: {:#x}",
-            self.port_registers.interrupt_status.read()
-        );
         let mut r = IOError::TryAgain as u32;
-        let buf_handle = self.push_buffer(0, buf);
-        unsafe { SLOT_STATUS[0] = addr_of_mut!(r) };
-        self.issue_ncq(0, command, offset / (SECTOR_SIZE as usize), true, 0);
+        let buf_handle = interrupts::without_interrupts(|| {
+            let mut lock_guard = self_lock.write();
+            (*lock_guard).port_registers.interrupt_status.write(!0);
+            let buf_handle = (*lock_guard).push_buffer(0, buf);
+            unsafe { SLOT_STATUS[0] = addr_of_mut!(r) };
+            (*lock_guard).issue_ncq(0, command, offset / (SECTOR_SIZE as usize), true, 0);
+            buf_handle
+        });
+
+        // println!(
+        //     "HBA control: {:#x}",
+        //     (*(self.drive_registers.read())).global_hba_control.read()
+        // );
+        //
+        // println!(
+        //     "interrupt enable: {:#x}",
+        //     self.port_registers.interrupt_enable.read()
+        // );
+        // println!(
+        //     "interrupt status: {:#x}",
+        //
+        // );
 
         let io_ptr = addr_of_mut!(r);
+        println!("io ptr is {:#x}", io_ptr as u64);
 
         // TODO: Replace with wait queues instead of spinning
         unsafe {
@@ -319,8 +325,9 @@ impl AHCIState {
             }
         }
 
+        let mut lock_guard = self_lock.write();
         unsafe { SLOT_STATUS[0] = core::ptr::null_mut() };
-        self.clear_slot(buf_handle);
+        (*lock_guard).clear_slot(buf_handle);
 
         Ok(())
     }
@@ -366,7 +373,7 @@ impl AHCIState {
                 continue;
             }
 
-            println!("going through: {bus}, {slot}, {func}");
+            // println!("going through: {bus}, {slot}, {func}");
 
             let drive_regs_page: Page<Size4KiB> =
                 Page::containing_address(VirtAddr::new(phys_addr));
@@ -395,24 +402,24 @@ impl AHCIState {
             if (*drive_regs_ptr).global_hba_control.read() & GHCMasks::AHCIEnable as u32 == 0 {
                 (*drive_regs_ptr)
                     .global_hba_control
-                    .write(GHCMasks::AHCIEnable as u32 | GHCMasks::InterruptEnable as u32);
+                    .write(GHCMasks::AHCIEnable as u32);
             }
-            println!(
-                "global_hba_control: {}",
-                (*drive_regs_ptr).global_hba_control.read()
-            );
+            // println!(
+            //     "global_hba_control: {}",
+            //     (*drive_regs_ptr).global_hba_control.read()
+            // );
             // (*drive_regs_ptr)
             //     .global_hba_control
             //     .write(GHCMasks::AHCIEnable as u32 | GHCMasks::InterruptEnable as u32);
 
-            println!("Drive regs ptr: {:#x}", drive_regs_ptr as u64);
-            println!("Capabilites: {:#x}", (*drive_regs_ptr).capabilities.read());
-            println!(
-                "global_hba_control: {}",
-                (*drive_regs_ptr).global_hba_control.read()
-            );
-
-            println!("Port mask: {}", (*drive_regs_ptr).port_mask.read());
+            // println!("Drive regs ptr: {:#x}", drive_regs_ptr as u64);
+            // println!("Capabilites: {:#x}", (*drive_regs_ptr).capabilities.read());
+            // println!(
+            //     "global_hba_control: {}",
+            //     (*drive_regs_ptr).global_hba_control.read()
+            // );
+            //
+            // println!("Port mask: {}", (*drive_regs_ptr).port_mask.read());
 
             for ahci_port in 0..32 {
                 let port_reg_ptr = (drive_regs_ptr as *mut u8)
@@ -429,7 +436,7 @@ impl AHCIState {
                             return Err(());
                         }
                         Ok(()) => {
-                            println!("Found one: {ahci_port}");
+                            // println!("Found one: {ahci_port}");
                             let lock_ref = DRIVE_REGISTER.get().unwrap();
                             let ahci_state =
                                 unsafe { AHCIState::init(bus, slot, func, ahci_port, lock_ref) };
@@ -439,7 +446,7 @@ impl AHCIState {
                     }
                 }
             }
-            println!("Next one");
+            // println!("Next one");
             addr_opt = pci.next_addr(bus, slot, func);
         }
 
@@ -461,12 +468,12 @@ impl AHCIState {
         use pci::ide_controller::Command::*;
 
         let nsectors = self.dma.ch[slot as usize].buffer_byte_pos / SECTOR_SIZE;
-        println!(
-            "Sending CFIS {:#x}-{:#x}-{:#x}",
-            CFIS_COMMAND | ((command as u32) << 16) | ((nsectors & 0xFF) << 24),
-            (sector as u32 & 0xFFFFFF) | (u32::from(fua) << 31) | 0x40000000,
-            ((sector >> 24) as u32) | ((nsectors & 0xFF00) << 16)
-        );
+        // println!(
+        //     "Sending CFIS {:#x}-{:#x}-{:#x}",
+        //     CFIS_COMMAND | ((command as u32) << 16) | ((nsectors & 0xFF) << 24),
+        //     (sector as u32 & 0xFFFFFF) | (u32::from(fua) << 31) | 0x40000000,
+        //     ((sector >> 24) as u32) | ((nsectors & 0xFF00) << 16)
+        // );
         self.dma.ct[slot as usize].cfis[0] =
             CFIS_COMMAND | ((command as u32) << 16) | ((nsectors & 0xFF) << 24);
         self.dma.ct[slot as usize].cfis[1] =
@@ -589,6 +596,7 @@ impl AHCIState {
         // technically this is safe because this is only called when locked, but this is basically
         // like juggling knives.. fixme?
         if !SLOT_STATUS[slot as usize].is_null() {
+            println!("Write to {:#x}", SLOT_STATUS[slot as usize] as u64);
             unsafe { SLOT_STATUS[slot as usize].write_volatile(result) };
             SLOT_STATUS[slot as usize] = core::ptr::null_mut();
         }
@@ -622,5 +630,5 @@ enum InterruptMasks {
 
 #[repr(u8)]
 pub enum IOError {
-    TryAgain = 0,
+    TryAgain = 12,
 }

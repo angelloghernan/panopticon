@@ -15,19 +15,18 @@ use crate::klib::ahci::ahcistate::AHCIState;
 use crate::klib::ahci::ahcistate::SATA_DISK0;
 use crate::klib::once_lock::OnceLock;
 use crate::klib::pci::ide_controller::Command::ReadFPDMAQueued;
-use crate::klib::pci::ide_controller::IDEController;
 use crate::klib::ps2;
 use crate::memory::init_page_table;
 use crate::memory::BootInfoFrameAllocator;
 use bootloader_api::config::{BootloaderConfig, Mapping};
 use bootloader_api::{entry_point, BootInfo};
+use core::mem::MaybeUninit;
 use idt::StackFrame;
 use klib::acpi::rsdp::Rsdp;
 use klib::graphics::framebuffer;
 use klib::idt;
 use klib::pic;
 use klib::pic::Irq;
-use lazy_static::lazy_static;
 use pic::PIC;
 use ps2::keyboard::KeyCode;
 use ps2::keyboard::SpecialKey;
@@ -45,6 +44,7 @@ use x86_64::VirtAddr;
 extern crate alloc;
 use core::sync::atomic::AtomicU64;
 
+/*
 lazy_static! {
     static ref IDT: idt::DescriptorTable = {
         let mut idt: idt::DescriptorTable = Default::default();
@@ -55,6 +55,9 @@ lazy_static! {
         idt
     };
 }
+*/
+
+static mut IDT: MaybeUninit<idt::DescriptorTable> = MaybeUninit::uninit();
 
 static TIMER: AtomicU64 = AtomicU64::new(0);
 
@@ -115,7 +118,17 @@ fn init(boot_info: &'static mut BootInfo) {
 
     // let rsdp = unsafe { Rsdp::get(rsdp_addr as usize) };
 
-    IDT.load();
+    let idt = unsafe {
+        IDT.write(Default::default());
+        IDT.assume_init_mut()
+    };
+
+    idt.breakpoint.set_handler_fn(breakpoint_handler);
+    idt.double_fault.set_handler_fn(double_fault_handler);
+    idt.user_interrupts[Irq::Timer as usize].set_handler_fn(timer_handler);
+    idt.user_interrupts[Irq::Keyboard as usize].set_handler_fn(keyboard_handler);
+
+    idt.load();
     unsafe {
         let mut pic_guard = PIC.lock();
         pic_guard.initialize();
@@ -161,14 +174,22 @@ fn init(boot_info: &'static mut BootInfo) {
 
     match SATA_DISK0.get() {
         Some(disk_lock) => {
-            let mut disk = disk_lock.write();
-            unsafe { disk.enable_interrupts() };
-            println!(
-                "Initialized AHCI disk, interrupts enabled: {}",
-                interrupts::are_enabled()
-            );
+            {
+                let mut disk = disk_lock.write();
+
+                interrupts::without_interrupts(|| {
+                    idt.user_interrupts[disk.irq as usize].set_handler_fn(ahci_handler);
+                });
+
+                unsafe { disk.enable_interrupts() };
+                println!(
+                    "Initialized AHCI disk, interrupts enabled: {}",
+                    interrupts::are_enabled()
+                );
+            }
+
             let mut buf = [0u8; 1024];
-            let res = disk.read_or_write(ReadFPDMAQueued, &mut buf, 0);
+            let res = AHCIState::read_or_write(disk_lock, ReadFPDMAQueued, &mut buf, 0);
 
             match res {
                 Ok(_) => println!("Read {} bytes from disk", buf.len()),
@@ -222,9 +243,13 @@ fn sleep(milliseconds: u64) {
 }
 
 extern "x86-interrupt" fn ahci_handler(_stack_frame: StackFrame) {
+    println!("AHCI interrupt");
     match SATA_DISK0.get() {
         Some(disk_lock) => {
-            (*disk_lock.write()).handle_interrupt();
+            let mut lock_guard = disk_lock.write();
+            (*lock_guard).handle_interrupt();
+            println!("Done handling");
+            unsafe { PIC.lock().end_of_interrupt((*lock_guard).irq as u8) };
         }
         None => {
             panic!("Unexpected call to AHCI handler");

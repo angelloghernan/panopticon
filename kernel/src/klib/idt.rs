@@ -1,8 +1,8 @@
 use crate::klib::x86_64;
 use x86_64::CanonicalAddress;
 
-use core::marker::PhantomData;
 use core::fmt;
+use core::marker::PhantomData;
 
 #[repr(C)]
 #[repr(align(16))]
@@ -39,10 +39,8 @@ pub struct DescriptorTable {
 
 impl DescriptorTable {
     #[inline]
-    pub fn load(&'static self) {
-        unsafe {
-            x86_64::lidt(&self.pointer())
-        }
+    pub fn load(&self) {
+        unsafe { x86_64::lidt(&self.pointer()) }
     }
 
     #[inline]
@@ -67,7 +65,7 @@ impl Default for DescriptorTable {
             invalid_opcode: Default::default(),
             device_not_available: Default::default(),
             double_fault: Default::default(),
-            _coprocessor_segment_overrun: Default::default(),  
+            _coprocessor_segment_overrun: Default::default(),
             invalid_tss: Default::default(),
             segment_not_present: Default::default(),
             stack_segment_fault: Default::default(),
@@ -121,39 +119,38 @@ impl<F> Default for Entry<F> {
             pointer_middle: 0,
             pointer_high: 0,
             zero: 0,
-            _phantom: PhantomData
+            _phantom: PhantomData,
         }
     }
-
 }
 
 impl<F> fmt::Debug for Entry<F> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Entry")
-         .field("pointer_low", &self.pointer_low)
-         .field("gdt_selector", &self.gdt_selector)
-         .field("options", &self.options)
-         .field("pointer_middle", &self.pointer_middle)
-         .field("pointer_high", &self.pointer_high)
-         .field("zero", &self.zero)
-         .finish()
+            .field("pointer_low", &self.pointer_low)
+            .field("gdt_selector", &self.gdt_selector)
+            .field("options", &self.options)
+            .field("pointer_middle", &self.pointer_middle)
+            .field("pointer_high", &self.pointer_high)
+            .field("zero", &self.zero)
+            .finish()
     }
 }
 
 impl<T> PartialEq for Entry<T> {
     fn eq(&self, other: &Self) -> bool {
-        self.pointer_low == other.pointer_low           &&
-            self.gdt_selector == other.gdt_selector     &&
-            self.options == other.options               &&
-            self.pointer_middle == other.pointer_middle &&
-            self.pointer_high == other.pointer_high
+        self.pointer_low == other.pointer_low
+            && self.gdt_selector == other.gdt_selector
+            && self.options == other.options
+            && self.pointer_middle == other.pointer_middle
+            && self.pointer_high == other.pointer_high
     }
 }
 
 #[repr(u8)]
 pub enum PrivilegeLevel {
     Kernel = 0u8,
-    User = 3u8, // We are not using 1-2; these are probably going to be deprecated 
+    User = 3u8, // We are not using 1-2; these are probably going to be deprecated
                 // as ring 1/2 are not used
 }
 
@@ -202,7 +199,6 @@ impl EntryOptions {
         self
     }
 }
-
 
 #[repr(C)]
 pub struct StackFrame {
@@ -274,7 +270,7 @@ macro_rules! impl_set_handler_fn {
                 self.set_handler_addr(handler as u64)
             }
         }
-    }
+    };
 }
 
 impl_set_handler_fn!(Handler);
