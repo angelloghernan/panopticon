@@ -10,6 +10,7 @@ use crate::BootInfoFrameAllocator;
 use crate::KERNEL_PAGETABLE;
 use alloc::boxed::Box;
 use core::marker::PhantomData;
+use core::mem::MaybeUninit;
 use core::ptr::addr_of;
 use core::ptr::addr_of_mut;
 use pci::ide_controller::Command as IDECommand;
@@ -285,12 +286,12 @@ impl AHCIState {
         ahci
     }
 
-    pub fn read_or_write(
+    pub fn read_or_write<'a>(
         self_lock: &RwLock<&mut Self>,
-        command: IDECommand,
-        buf: &mut [u8],
+        command: Command,
+        buf: &'a mut [MaybeUninit<u8>],
         offset: usize,
-    ) -> Result<(), IOError> {
+    ) -> Result<&'a mut [u8], IOError> {
         let mut r = IOError::TryAgain as u32;
         let buf_handle = interrupts::without_interrupts(|| {
             let mut lock_guard = self_lock.write();
@@ -316,7 +317,6 @@ impl AHCIState {
         // );
 
         let io_ptr = addr_of_mut!(r);
-        println!("io ptr is {:#x}", io_ptr as u64);
 
         // TODO: Replace with wait queues instead of spinning
         unsafe {
@@ -329,7 +329,9 @@ impl AHCIState {
         unsafe { SLOT_STATUS[0] = core::ptr::null_mut() };
         (*lock_guard).clear_slot(buf_handle);
 
-        Ok(())
+        let buf_ref = unsafe { MaybeUninit::slice_assume_init_mut(buf) };
+
+        Ok(buf_ref)
     }
 
     pub unsafe fn enable_interrupts(&mut self) {
@@ -457,16 +459,7 @@ impl AHCIState {
     // Must preceed call with clear_slot(slot) and push_buffer(slot).
     // `fua`: If true, then don't acknowledge the write until data has been durably
     // written to disk. `priority`: 0 is normal priority, 2 is high priority
-    fn issue_ncq(
-        &mut self,
-        slot: u32,
-        command: pci::ide_controller::Command,
-        sector: usize,
-        fua: bool,
-        priority: u32,
-    ) {
-        use pci::ide_controller::Command::*;
-
+    fn issue_ncq(&mut self, slot: u32, command: Command, sector: usize, fua: bool, priority: u32) {
         let nsectors = self.dma.ch[slot as usize].buffer_byte_pos / SECTOR_SIZE;
         // println!(
         //     "Sending CFIS {:#x}-{:#x}-{:#x}",
@@ -483,7 +476,7 @@ impl AHCIState {
 
         self.dma.ch[slot as usize].flags = 4 /* # words in `cfis` */
             | (CHFlag::Clear as u16)
-            | (if let WriteFPDMAQueued = command { CHFlag::Write as u16 } else { 0 });
+            | (if let Command::Write = command { CHFlag::Write as u16 } else { 0 });
         self.dma.ch[slot as usize].buffer_byte_pos = 0;
 
         // ensure all previous writes have made it out to memory
@@ -596,7 +589,6 @@ impl AHCIState {
         // technically this is safe because this is only called when locked, but this is basically
         // like juggling knives.. fixme?
         if !SLOT_STATUS[slot as usize].is_null() {
-            println!("Write to {:#x}", SLOT_STATUS[slot as usize] as u64);
             unsafe { SLOT_STATUS[slot as usize].write_volatile(result) };
             SLOT_STATUS[slot as usize] = core::ptr::null_mut();
         }
@@ -631,4 +623,11 @@ enum InterruptMasks {
 #[repr(u8)]
 pub enum IOError {
     TryAgain = 12,
+    BadData = 13,
+}
+
+#[repr(u32)]
+pub enum Command {
+    Read = IDECommand::ReadFPDMAQueued as u32,
+    Write = IDECommand::WriteFPDMAQueued as u32,
 }

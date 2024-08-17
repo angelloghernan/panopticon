@@ -4,29 +4,33 @@
 #![feature(abi_x86_interrupt)]
 #![feature(maybe_uninit_uninit_array)]
 #![feature(generic_const_exprs)]
+#![feature(maybe_uninit_as_bytes)]
+#![feature(maybe_uninit_slice)]
 #![feature(dropck_eyepatch)]
 #![feature(never_type)]
 #![feature(offset_of)]
 
 mod allocator;
+mod fs;
 mod klib;
 mod memory;
-use crate::klib::ahci::ahcistate::AHCIState;
-use crate::klib::ahci::ahcistate::SATA_DISK0;
-use crate::klib::once_lock::OnceLock;
-use crate::klib::pci::ide_controller::Command::ReadFPDMAQueued;
-use crate::klib::ps2;
-use crate::memory::init_page_table;
-use crate::memory::BootInfoFrameAllocator;
 use bootloader_api::config::{BootloaderConfig, Mapping};
 use bootloader_api::{entry_point, BootInfo};
 use core::mem::MaybeUninit;
+use fs::ext2::Superblock;
 use idt::StackFrame;
 use klib::acpi::rsdp::Rsdp;
+use klib::ahci::ahcistate::AHCIState;
+use klib::ahci::ahcistate::SATA_DISK0;
 use klib::graphics::framebuffer;
 use klib::idt;
+use klib::once_lock::OnceLock;
+use klib::pci::ide_controller::Command::ReadFPDMAQueued;
 use klib::pic;
 use klib::pic::Irq;
+use klib::ps2;
+use memory::init_page_table;
+use memory::BootInfoFrameAllocator;
 use pic::PIC;
 use ps2::keyboard::KeyCode;
 use ps2::keyboard::SpecialKey;
@@ -188,13 +192,18 @@ fn init(boot_info: &'static mut BootInfo) {
                 );
             }
 
-            let mut buf = [0u8; 1024];
-            let res = AHCIState::read_or_write(disk_lock, ReadFPDMAQueued, &mut buf, 0);
+            // let mut buf: [MaybeUninit<u8>; 1024] = [MaybeUninit::uninit(); 1024];
+            // let res = AHCIState::read_or_write(disk_lock, ReadFPDMAQueued, &mut buf, 0);
 
-            match res {
-                Ok(_) => println!("Read {} bytes from disk", buf.len()),
-                Err(_) => println!("Failed to read bytes from disk"),
-            }
+            let maybe_superblock = Superblock::new(disk_lock);
+
+            let superblock = match maybe_superblock {
+                Ok(sb) => sb,
+                Err(_) => panic!("Failed to read bytes from disk"),
+            };
+
+            println!("Read superblock into disk");
+            println!("Superblock: {:?}", superblock);
         }
         None => panic!("Failed to initialize AHCI disk"),
     };
@@ -243,12 +252,10 @@ fn sleep(milliseconds: u64) {
 }
 
 extern "x86-interrupt" fn ahci_handler(_stack_frame: StackFrame) {
-    println!("AHCI interrupt");
     match SATA_DISK0.get() {
         Some(disk_lock) => {
             let mut lock_guard = disk_lock.write();
             (*lock_guard).handle_interrupt();
-            println!("Done handling");
             unsafe { PIC.lock().end_of_interrupt((*lock_guard).irq as u8) };
         }
         None => {
